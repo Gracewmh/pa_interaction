@@ -11,35 +11,98 @@ library(haven)
 library(tidyverse)
 ```
 
-# Data Import
+
+# 2008–2018 for HRS (waves 9–14), 
+
+## Data Import
 
 PS: Data from 2019 onward include the COVID-19 period, which represents a major confounding factor in our study.
 
 This population-based, cross-national cohort study used longitudinal data from three cohorts of adults aged 60 years and older: HRS, ELSA, and MHAS. These cohorts included data on participants' physical activities, social activities, loneliness, and depressive symptoms. To ensure comparability across surveys, we analyzed data from similar time periods: 2008–2018 for HRS (waves 9–14), 2010–2018 for ELSA (waves 5–9), and 2012–2018 for MHAS (waves 3–5).
 
-## 2008–2018 for HRS (waves 9–14), 
 ```{r}
 HRS_raw = read_sav("./data/HRS/randhrs1992_2020v2.sav")
+
 ```
 
-```{r}
 
+## Data Manipulation
+We included participants aged 60 and older who had reported data on physical activities, social activities, and loneliness at baseline and had been assessed at least twice. We excluded those with depressive symptoms at baseline, those with missing data on depressive symptoms or covariates, and those lost to follow-up. Participants were followed from their first assessment until the study outcome occurred, their last valid follow-up questionnaire, or the end of the study period, whichever came first. The estimated sample size is around 16,000.
+
+```{r}
 # Select columns starting with R9, R10, R11, R12, R13, and R4, plus HHIDPN
 all_cols <- names(HRS_raw)
-selected_cols <- c("HHIDPN", all_cols[grepl("^R(9|10|11|12|13|4)", all_cols)])
+selected_cols <- c("HHIDPN", all_cols[grepl("^R(9|10|11|12|13|14)", all_cols)])
 
 # Create the new dataframe with selected columns
-HRS_filtered <- HRS_raw[, selected_cols]
+HRS_9_14 <- HRS_raw[, selected_cols] |>
+  filter(R9IWSTAT == 1 | R10IWSTAT == 1 | R11IWSTAT == 1 |
+         R12IWSTAT == 1 | R13IWSTAT == 1 | R14IWSTAT == 1)
+
 ```
-## 2010–2018 for ELSA (waves 5–9)
+
+28575 unique individuals in HRA from 2008 to 2018 (waves 9–14)
+
+```{r}
+HRS_9_14_inclusion = HRS_9_14 |>
+  #Age < 60
+    mutate(
+    estimated_age_at_R9 = case_when(
+      !is.na(R9AGEY_E) ~ R9AGEY_E,
+      !is.na(R10AGEY_E) ~ R10AGEY_E - 2,
+      !is.na(R11AGEY_E) ~ R11AGEY_E - 4,
+      !is.na(R12AGEY_E) ~ R12AGEY_E - 6,
+      !is.na(R13AGEY_E) ~ R13AGEY_E - 8,
+      !is.na(R14AGEY_E) ~ R14AGEY_E - 10,
+      TRUE ~ NA_real_
+    )
+  )|>
+  filter( estimated_age_at_R9 >= 55)
+# information of depression: NA or Yes
+# Anymissing data in baseline characteristics
+# Lost to follow up or interviewed only once
+ 
+```
+- Age < 55:  11247 (18471)
+- information of depression: NA or Yes: 
+
+**Participants without Depression at baseline: **
+
+- Anymissing data in baseline characteristics
+- Lost to follow up or interviewed only once
+
+**Participants included at baseline: **
+
+### Selecte desired Variables
+
+#### Baseline characteristics
+
+- Age
+- 
+
+#### Exposure: social isolation or loneliness
+
+#### Outcomes: depression
+
+#### EMM: PA
+
+### Exclusion Criteria: 
+
+```{r}
+#Age < 60
+# information of depression: NA or Yes
+# Anymissing data in baseline characteristics
+# Lost to follow up or interviewed only once
+ 
+```
+
+
+# 2010–2018 for ELSA (waves 5–9)
 ```{r}
 
 ```
 
-## 2012–2018 for MHAS (waves 3–5)
+# 2012–2018 for MHAS (waves 3–5)
 ```{r}
 
 ```
-
-# Data Manipulation
-We included participants aged 60 and older who had reported data on physical activities, social activities, and loneliness at baseline and had been assessed at least twice. We excluded those with depressive symptoms at baseline, those with missing data on depressive symptoms or covariates, and those lost to follow-up. Participants were followed from their first assessment until the study outcome occurred, their last valid follow-up questionnaire, or the end of the study period, whichever came first. The estimated sample size is around 16,000.
