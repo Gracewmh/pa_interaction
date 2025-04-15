@@ -838,10 +838,148 @@ elsa_baseline = elsa_wave4_core|>
   # Step2 CESD:Without information about depression at baseline
   filter(!is.na(cesd_score))　|>
   # Step2 CESD:With depression at baseline
-  filter(cesd_score < 2)
+  filter(cesd_score < 2)|>
+  # Step3: With missing data in baseline characteristics:
+    #3.1 Build loneliness
+      # 3.11. 计算三项 R-UCLA 总分及二值变量（总分≥4判定为孤独）
+      mutate(
+        loneliness_three = scfeela + scfeelb + scfeelc,
+        lonely_three = if_else(loneliness_three >= 4, 1, 0, missing = NA_real_)
+      ) %>%
+      # 3.12. 处理单项测量 scfeele
+      mutate(
+        # 仅当 scfeele 为有效回答（1、2、3）时返回1，否则当为负值时视为缺失
+        lonely_single = case_when(
+          scfeele %in% c(1, 2, 3) ~ 1,
+          scfeele < 0 ~ NA_real_
+        )
+      ) %>%
+      # 3.13. 综合两种测量结果：只要任一指标为1，则定义为孤独
+      mutate(
+        loneliness_binary = if_else(lonely_three == 1 | lonely_single == 1, 1, 0, missing = NA_real_)
+      ) %>%
+      # 3.14. 将 loneliness_binary 转化为因子
+      mutate(
+        Loneliness = factor(loneliness_binary, levels = c(0, 1), labels = c("Not lonely", "Lonely"))
+      )|>
+  # Step 4: 建立 Social_isolation 指标
+    # 4.1 处理社交参与变量，将无效值(-9, -8, -2, -1)转换为 NA；变量包括：scorg01, scorg03, scorg04, scorg06, scorg07, scorg08
+    mutate(across(
+      .cols = c(scorg01, scorg03, scorg04, scorg06, scorg07, scorg08),
+      .fns = ~ if_else(. %in% c(-9, -8, -2, -1), NA_real_, as.numeric(.))
+    )) |>
+    # 4.2 汇总上述变量（1表示有参与，0表示没有）得到参与总数
+    mutate(
+      total_social_yes = rowSums(across(c(scorg01, scorg03, scorg04, scorg06, scorg07, scorg08)), na.rm = TRUE)
+    ) |>
+    # 4.3 定义社交隔离指标：若 total_social_yes 为 0，则说明没有参与任何社交活动
+    mutate(
+      social_isolation_binary = if_else(total_social_yes == 0, 1, 0)
+    ) |>
+    # 4.4 转换为因子：0 = "Socially integrated", 1 = "Socially isolated"
+    mutate(
+      Social_isolation = factor(social_isolation_binary,
+                                levels = c(0, 1),
+                                labels = c("Socially integrated", "Socially isolated"))
+    )|>
+  # Step 5: 建立 Physical inactivity 指标
+  
+  
+  
+  
+    filter(
+      !is.na(Social_isolation),  #Social activities: Respondent is NOT a member of any organisations, clubs or societies
+      !is.na(Loneliness), #  felt loneliness
+      !is.na(R9VGACTX), # vigorous PA
+      !is.na(R9MDACTX), # median PA
+      !is.na(RAGENDER),# sex
+      !is.na(R9MSTAT),# marital status
+      !is.na(RAEDUC),# Education
+      !is.na(R9FINR), # Family income
+      !is.na(R9LBRF), # Employment status
+      !is.na(R9BMI),#BMI
+  
+      !is.na(R9DRINK))|># Alcohol consumption
+    # smoking
+      mutate(
+      Smoking = case_when(
+        # 当前吸烟者(Current smoker)
+        R9SMOKEN == 1 ~ "Current smoker",
+        
+        # 曾经吸烟但现在不吸烟者(Former smoker)
+        R9SMOKEN == 0 & R9SMOKEV == 1 ~ "Former smoker",
+        
+        # 从不吸烟者(Non-smoker)
+        R9SMOKEN == 0 & R9SMOKEV == 0 ~ "Non-smoker",
+        
+        # 处理缺失值
+        TRUE ~ NA_character_
+      )
+    )|>
+      # NCDs
+       mutate(
+      ncd_count = rowSums(
+        cbind(
+          R9HIBP,    # Hypertension
+          R9HEART,   # Heart disease
+          R9STROKE,  # Stroke
+          R9DIAB,    # Diabetes
+          R9LUNG,    # Lung disease (e.g., COPD)
+          R9CANCR,   # Cancer
+          R9ARTHR    # Arthritis
+        ) == 1,      # Count only positive responses
+        na.rm = TRUE
+      )
+    ) |>
+     filter(!is.na(ncd_count),!is.na(Smoking))
+    
+    
+  
   dim(elsa_baseline)
+  
 ```
-|>
+
+
+Loneliness was measured by the original surveys using the 
+1. three-term revised University of California, Los Angeles Loneliness Scale (R-UCLA): **scfeela**, **scfeelb**,**scfeelc**, 
+  1.1 Total scores range from 3 to 9 (three-item R-UCLA)
+  1.2 4 or higher as a cutoff
+2. a single question that asked how often respondents felt lonely in the past week or if they felt lonely the majority of time. **scfeele**
+  2.1 Total scores range from 0 to 3 , 
+  2.2 1 or higher as a cutoff 
+
+Social isolation
+Are you a member of any of these organisations`orgno`, clubs or societies 
+(Political party; `scorg01`
+Church or other religious groups; `scorg03`
+Charitable associations; `scorg04`
+Social clubs; `scorg06`
+Sports clubs, `scorg07`
+Any other organisations,clubs or societies; `scorg08`
+None)? [the number of choices selected]:
+	Value = -9.0	Label = Not answered
+	Value = -8.0	Label = Don't know (98)
+	Value = -2.0	Label = Schedule Not Applicable
+	Value = -1.0	Label = Item not applicable
+	Value = 0.0	Label = No
+	Value = 1.0	Label = Yes
+
+Physical incactivity:
+No = Frequency of taking part in vigorous/moderate physical activity: 1. More than once a week; 2. Once a week
+Yes = Frequency of taking part in vigorous/moderate physical activity: 1. One to three times a month; 2. Hardly ever or never.
+
+Frequency does vigorous sports or activities: `heacta`
+Frequency does moderate sports or activities:`heactb`
+  Value label information for heacta
+  	Value = -9.0	Label = Refusal
+  	Value = -8.0	Label = Don't Know
+  	Value = -2.0	Label = Schedule not applicable
+  	Value = -1.0	Label = Item not applicable
+  	Value = 1.0	Label = ...more than once a week,
+  	Value = 2.0	Label = once a week,
+  	Value = 3.0	Label = one to three times a month,
+  	Value = 4.0	Label = hardly ever, or never?
+
   
 # 2012–2018 for MHAS (waves 3–5)
 ```{r}
