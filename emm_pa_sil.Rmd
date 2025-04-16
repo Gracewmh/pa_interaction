@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(haven)
 library(tidyverse)
 library(survival)
+library(mice)
 ```
 
 
@@ -800,17 +801,15 @@ anova(cox_model_hrs_adjust_ssi, cox_model_hrs_emm_ssi, test = "LRT")
 
 # 2010–2018 for ELSA (waves 5–9)
 
-## Data Import
+## Baseline
+
+### Data Import
 ```{r}
 
-# 读取 wave 5 核心访谈数据baseline
-elsa_wave5_core <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_5_elsa_data_v4.dta")
+# 读取 wave 4 核心访谈数据baseline
+
 elsa_wave4_core <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_4_elsa_data_v3.dta")
 
-wave6 = read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_6_elsa_data_v2.dta")
-wave7=read_dta( "./data/UKDA-5050-stata/stata/stata13_se/wave_7_elsa_data.dta")
-wave8=read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_8_elsa_data_eul_v1.dta")
-wave9=read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_9_elsa_data_eul_v2.dta")
 ```
 
 ```{r}
@@ -839,7 +838,7 @@ elsa_baseline = elsa_wave4_core|>
   filter(!is.na(cesd_score))　|>
   # Step2 CESD:With depression at baseline
   filter(cesd_score < 2)|>
-  # Step3: With missing data in baseline characteristics:
+  # Step3: Build loneliness
     #3.1 Build loneliness
       # 3.11. 计算三项 R-UCLA 总分及二值变量（总分≥4判定为孤独）
       mutate(
@@ -883,61 +882,176 @@ elsa_baseline = elsa_wave4_core|>
                                 labels = c("Socially integrated", "Socially isolated"))
     )|>
   # Step 5: 建立 Physical inactivity 指标
-  
-  
-  
-  
-    filter(
-      !is.na(Social_isolation),  #Social activities: Respondent is NOT a member of any organisations, clubs or societies
-      !is.na(Loneliness), #  felt loneliness
-      !is.na(R9VGACTX), # vigorous PA
-      !is.na(R9MDACTX), # median PA
-      !is.na(RAGENDER),# sex
-      !is.na(R9MSTAT),# marital status
-      !is.na(RAEDUC),# Education
-      !is.na(R9FINR), # Family income
-      !is.na(R9LBRF), # Employment status
-      !is.na(R9BMI),#BMI
-  
-      !is.na(R9DRINK))|># Alcohol consumption
-    # smoking
-      mutate(
-      Smoking = case_when(
-        # 当前吸烟者(Current smoker)
-        R9SMOKEN == 1 ~ "Current smoker",
-        
-        # 曾经吸烟但现在不吸烟者(Former smoker)
-        R9SMOKEN == 0 & R9SMOKEV == 1 ~ "Former smoker",
-        
-        # 从不吸烟者(Non-smoker)
-        R9SMOKEN == 0 & R9SMOKEV == 0 ~ "Non-smoker",
-        
-        # 处理缺失值
-        TRUE ~ NA_character_
-      )
-    )|>
-      # NCDs
-       mutate(
-      ncd_count = rowSums(
-        cbind(
-          R9HIBP,    # Hypertension
-          R9HEART,   # Heart disease
-          R9STROKE,  # Stroke
-          R9DIAB,    # Diabetes
-          R9LUNG,    # Lung disease (e.g., COPD)
-          R9CANCR,   # Cancer
-          R9ARTHR    # Arthritis
-        ) == 1,      # Count only positive responses
-        na.rm = TRUE
+    # 5.1 对 heacta 和 heactb 进行无效值处理（将 -9, -8, -2, -1 转为 NA）
+    mutate(across(
+      .cols = c(heacta, heactb),
+      .fns = ~ if_else(. %in% c(-9, -8, -2, -1), NA_real_, as.numeric(.))
+    )) |>
+    # 5.2 分别对激烈和中等体育活动进行二值转换：
+    #     对于 heacta: 1、2 => 活跃 (0); 3、4 => 不活跃 (1)
+    #     对于 heactb: 同上
+    mutate(
+      vigorous_active = case_when(
+        heacta %in% c(1, 2) ~ 0,
+        heacta %in% c(3, 4) ~ 1,
+        TRUE ~ NA_real_
+      ),
+      moderate_active = case_when(
+        heactb %in% c(1, 2) ~ 0,
+        heactb %in% c(3, 4) ~ 1,
+        TRUE ~ NA_real_
       )
     ) |>
-     filter(!is.na(ncd_count),!is.na(Smoking))
-    
-    
+    # 5.3 综合两个指标：只要任一项显示活跃（0），则总体上视为“活跃”（physical inactivity = 0），
+    #     仅当两项均为低频（1）时，定义为身体不活跃 (physical inactivity = 1)
+    mutate(
+      physical_inactivity_binary = case_when(
+        (!is.na(vigorous_active) & vigorous_active == 0) | (!is.na(moderate_active) & moderate_active == 0) ~ 0,
+        (vigorous_active == 1 & moderate_active == 1) ~ 1,
+        TRUE ~ NA_real_
+      )
+    ) |>
+    # 5.4 转换为因子变量
+    mutate(Physical_inactivity = factor(physical_inactivity_binary, levels = c(0, 1),labels = c("No", "Yes"))
+           )|>
   
+  # Step 6: 处理 dimar 变量，将无效值转换为 NA（如未提前处理）
+    mutate(dimar = if_else(dimar %in% c(-9, -8, -2, -1), NA_real_, dimar)) |>
+    # 建立 Marital_status 变量：
+    # “Married or partnered”：包括 value = 2, 3, 4, 5, 8, 11，
+    # “Single”：包括 value = 1, 6, 7, 9, 10
+    mutate(Marital_status = case_when(
+      dimar %in% c(2, 3, 4, 5, 8, 11) ~ "Married or partnered",
+      dimar %in% c(1, 6, 7, 9, 10) ~ "Single",
+      TRUE ~ NA_character_
+    )) |>
+    # 转换为因子
+    mutate(Marital_status = factor(Marital_status, levels = c("Married or partnered", "Single")))|>
+  
+  # Step 7: 建立 Education 变量
+    # 1. 将 -9, -8, -3 视为无效值并转换为 NA
+    mutate(w4edqual = if_else(w4edqual %in% c(-9, -8, -3), NA_real_, w4edqual)) |>
+    # 2. 基于 w4edqual 的取值分组
+    mutate(
+      Education = case_when(
+        w4edqual %in% c(1)      ~ "Tertiary",                # 高等教育
+        w4edqual %in% c(2, 3, 4)      ~ "Upper secondary",         # 高中或同等学历
+        w4edqual %in% c(5, 6, 7, -8)   ~ "Less than upper secondary",
+        TRUE                       ~ NA_character_              # 处理剩余意外情况
+      )
+    ) |>
+    # 3. 转换为因子，按照从低到高的顺序
+    mutate(Education = factor(Education,levels = c("Less than upper secondary", "Upper secondary","Tertiary"))
+    ) |>
+  
+   # Step 8: 建立 Empoyment status 变量 
+    # 处理 wpdes 变量：将无效值转换为 NA
+    mutate(
+      wpdes = if_else(wpdes %in% c(-9, -8, -2, -1), NA_real_, wpdes),
+      Employment_status = case_when(
+        wpdes %in% c(1, 96) ~ "Retired",          # Retired 或 Semi-retired
+        wpdes %in% c(2, 3)  ~ "Working",            # Employed 或 Self-employed
+        wpdes %in% c(4, 5, 6) ~ "Not working",       # Unemployed, Permanently sick or disabled, Looking after home or family
+        TRUE ~ NA_character_                       # 对于其他值（如 85,86,95）返回 NA
+      )
+    ) |>
+    # 将 Employment_status 转换为因子，因子水平顺序为：Not working, Working, Retired
+    mutate(
+      Employment_status = factor(Employment_status,
+                                 levels = c("Not working", "Working", "Retired"))
+    )|>
+    # Step 9: 建立 Alcohol consumption 指标
+    # 1. 先将 scako 中的无效值转换为 NA
+        mutate(
+        scako = case_when(
+          scako == -9 ~ NA_real_,
+          scako == -1 ~ 8,
+          TRUE ~ scako
+        )
+      ) |>
+      # 2. 根据 scako 的取值构建二值变量：
+      #    方案中将值 7 和 8 归为“不饮酒”（0），1～6 归为“饮酒”（1）
+      mutate(
+        alcohol_consumption_binary = case_when(
+          scako %in% c(7, 8) ~ 0,
+          scako >= 1 & scako <= 6 ~ 1,
+          TRUE ~ NA_real_
+        )
+      ) |>
+      # 3. 转换为因子变量
+      mutate(
+        Alcohol_consumption = factor(alcohol_consumption_binary,
+                                     levels = c(0, 1),
+                                     labels = c("No", "Yes"))
+      )|>
+    # Step 10: 建立 Smoke 指标
+      # 先对 dhesmk 和 dheska 进行无效值处理，仅将 -5 转为 NA，保留 -1
+      mutate(
+        dhesmk = if_else(dhesmk %in% c(-5), NA_real_, dhesmk),
+        dheska = if_else(dheska %in% c(-5), NA_real_, dheska)
+      ) |>
+      # 将 -1 (Not applicable) 重新编码为 2 (No), 表示“不吸烟”
+      mutate(
+        dhesmk = if_else(dhesmk == -1, 2, dhesmk),
+        dheska = if_else(dheska == -1, 2, dheska)
+      ) |>
+      # 根据 dhesmk 和 dheska 构建烟草变量
+      mutate(
+        Smoke = case_when(
+          dheska == 1                         ~ "Current smoker",   # 当前吸烟
+          dhesmk == 1 & dheska == 2             ~ "Past smoker",      # 曾经吸烟，但目前已停止
+          dhesmk == 2                         ~ "Non-smoker",       # 从未吸烟（或不适用，即认为不吸烟）
+          TRUE                                ~ NA_character_       # 其他情况返回 NA
+        )
+      ) |>
+      # 转换为因子，设置水平顺序：Non-smoker, Past smoker, Current smoker
+      mutate(
+        Smoke = factor(Smoke, levels = c("Non-smoker", "Past smoker", "Current smoker"))
+      )|>
+      # Step 11: 建立 NCDs 指标
+      # 1. 对所有 NCD 相关变量进行重新编码：
+      #    如果原始值 == 1，则编码为 1（有该病）；
+      #    如果原始值 == 2 或属于 c(-9, -8, -1, 3)，则编码为 0（没有该病）；
+      #    如果值为 -2，则保留 NA（作为无效回答）。
+      mutate(across(
+        c(hedacbp, hedacan, hedacmi, hedachf, hedachm, hedacar,
+          hedacst, hedacdi, hedbdlu, hedbdca, hedbdar),
+        ~ case_when(
+             . == 1 ~ 1,
+             . == 2 ~ 0,
+             . %in% c(-9, -8, -1, 3) ~ 0,
+             . == -2 ~ NA_real_,
+             TRUE ~ NA_real_
+           )
+      )) |>
+      # 2. 对每一行求和：ncd_sum 表示受访者有多少种疾病
+      mutate(
+        ncd_sum = rowSums(across(
+          c(hedacbp, hedacan, hedacmi, hedachf, hedachm, hedacar,
+            hedacst, hedacdi, hedbdlu, hedbdca, hedbdar),
+          ~ .
+        ), na.rm = TRUE),
+        # 计算每行有效（非缺失）指标的个数
+        ncd_non_missing = rowSums(across(
+          c(hedacbp, hedacan, hedacmi, hedachf, hedachm, hedacar,
+            hedacst, hedacdi, hedbdlu, hedbdca, hedbdar),
+          ~ !is.na(.)
+        ))
+      ) |>
+      # 3. 如果某行全部指标均缺失，则 ncd_count 设为 NA；否则 ncd_count 用 ncd_sum 表示总数
+      mutate(
+        ncd_count = if_else(ncd_non_missing == 0, NA_real_, ncd_sum),
+        # 根据 ncd_count 构建 NCDs 指标：至少有1项疾病归为 "1 or more"，否则 "None"
+        NCDs = if_else(ncd_count >= 1, "1 or more", "None")) |>
+      # 4. 转换为因子，设定水平为 "None" 和 "1 or more"
+      mutate(
+        NCDs = factor(NCDs, levels = c("None", "1 or more"))
+      )
   dim(elsa_baseline)
   
 ```
+
+
 
 
 Loneliness was measured by the original surveys using the 
@@ -980,8 +1094,169 @@ Frequency does moderate sports or activities:`heactb`
   	Value = 3.0	Label = one to three times a month,
   	Value = 4.0	Label = hardly ever, or never?
 
+
+NCDs 
+1. None:  Participants do not have any communicable diseases. 
+2. 1 or more: Participants have at least one communicable disease: 
+        hypertension, `hedacbp`
+        heart problems: `hedacan`,`hedacmi`, ` hedachf`, `hedachm`, `hedacar`, 
+        stroke, `hedacst`
+        diabetes, `hedacdi`
+        lung diseases, `hedbdlu`
+        cancer, `hedbdca`
+        arthritis:`hedbdar`
+    This variable is  numeric, the SPSS measurement level is NOMINAL
+    	Value label information for hedacst
+    	Value = -9.0	Label = Refusal
+    	Value = -8.0	Label = Don't Know
+    	Value = -2.0	Label = Capi/Interview Error
+    	Value = -1.0	Label = Item not applicable
+    	Value = 1.0	Label = Yes
+    	Value = 2.0	Label = No
+    	Value = 3.0	Label = Not read out as didn t make sense
+
+
+
+```{r}
+elsa_wave4_bmi <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_4_nurse_data.dta")|>
+  select(idauniq, bmival)|>
+  mutate(
+    BMI = case_when(
+      bmival < 25 ~ "Underweight or normal weight",
+      bmival >= 25 & bmival < 30 ~ "Overweight",
+      bmival >= 30 ~ "Obesity",
+      TRUE ~ NA_character_
+    ),
+    BMI = factor(BMI, levels = c("Underweight or normal weight", "Overweight", "Obesity"))
+  )
+
+elsa_baseline_bmi <- elsa_baseline %>%
+  left_join(elsa_wave4_bmi, by = "idauniq")
   
-# 2012–2018 for MHAS (waves 3–5)
+elsa_baseline_bmi %>% 
+  summarise(
+    miss_age = sum(is.na(indager)),
+    miss_Social_isolation = sum(is.na(Social_isolation)),
+    miss_Loneliness = sum(is.na(Loneliness)),
+    miss_Physical_inactivity = sum(is.na(Physical_inactivity)),
+    miss_indsex = sum(is.na(indsex)),
+    miss_Marital_status = sum(is.na(Marital_status)),
+    miss_Education = sum(is.na(Education)),
+    miss_Employment_status = sum(is.na(Employment_status)),
+    miss_BMI = sum(is.na(BMI)),
+    miss_Alcohol_consumption = sum(is.na(Alcohol_consumption)),
+    miss_Smoke = sum(is.na(Smoke)),
+    miss_NCDs = sum(is.na(NCDs))
+  )
+
+```
+
+
+
 ```{r}
 
+# 初始化 mice 模型说明，获取方法向量和预测矩阵
+init <- mice(elsa_baseline_bmi, maxit = 0, print = FALSE)
+meth <- init$method
+predM <- init$predictorMatrix
+
+# 将所有变量的插补方法设为空字符串（表示不插补），只对 BMI 进行插补
+meth[] <- ""         # 所有变量均不进行插补
+meth["BMI"] <- "polyreg"  # 仅对 BMI 使用多项逻辑回归（polyreg）插补方法
+
+# 设置一些关键预测变量，如果数据中有 age、indsex 等，将它们用来预测 BMI
+# 即使这些变量存在缺失，它们仍会在预测矩阵中参与预测
+predM["BMI", "indager"] <- 1
+predM["BMI", "indsex"] <- 1
+predM["BMI", "Alcohol_consumption"] <- 1
+predM["BMI", "NCDs"] <- 1
+# 如果有其它变量你认为对 BMI 预测有帮助，可以同样设置：
+# predM["BMI", "other_var"] <- 1
+
+# 执行多重插补，生成 5 个插补数据集
+set.seed(12345)
+imputed_data <- mice(elsa_baseline_bmi, method = meth, predictorMatrix = predM, m = 5, seed = 12345)
+
+
+# 提取第一个插补后的完整数据集
+elsa_baseline_bmi_complete <- complete(imputed_data, 1)
+
+
+elsa_baseline_bmi_complete%>% 
+  summarise(
+    miss_Social_isolation = sum(is.na(Social_isolation)),
+    miss_Loneliness = sum(is.na(Loneliness)),
+    miss_Physical_inactivity = sum(is.na(Physical_inactivity)),
+    miss_indsex = sum(is.na(indsex)),
+    miss_Marital_status = sum(is.na(Marital_status)),
+    miss_Education = sum(is.na(Education)),
+    miss_Employment_status = sum(is.na(Employment_status)),
+    miss_BMI = sum(is.na(BMI)),
+    miss_Alcohol_consumption = sum(is.na(Alcohol_consumption)),
+    miss_Smoke = sum(is.na(Smoke)),
+    miss_NCDs = sum(is.na(NCDs))
+  )
+```
+
+
+
+```{r}
+elsa_baseline_non_na = elsa_baseline_bmi_complete |>
+    mutate(
+      # 将无效值（例如 -9, -8, -1）转换为 NA
+      fqethnr = if_else(fqethnr %in% c(-9, -8, -1), NA_real_, fqethnr),
+      # 根据 fqethnr 构建 race 变量
+      race = case_when(
+        fqethnr == 1 ~ "White/Caucasian",
+        fqethnr == 2 ~ "Other",  # 如果只根据此变量，非白人只能归为 Other
+        TRUE ~ NA_character_
+      )
+    )|>
+# Step: With missing data in baseline characteristics:
+    filter(
+      !is.na(Social_isolation),  #Social activities: Respondent is NOT a member of any organisations, clubs or societies
+      !is.na(Loneliness), #  felt loneliness
+      !is.na(Physical_inactivity), # PA
+      !is.na(indsex),# sex
+      !is.na(Marital_status),# marital status
+      !is.na(Education),# Education
+      !is.na(Employment_status), # Employment status
+      !is.na(BMI), # Nurse data里
+      !is.na(Alcohol_consumption),# Alcohol consumption
+      !is.na(Smoke),# smoking
+      !is.na(NCDs),
+      !is.na(race)
+      )
+dim(elsa_baseline_non_na)
+
+```
+
+
+
+
+	
+	
+## Follow-up:
+### import
+```{r}
+
+```
+
+elsa_wave5_core <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_5_elsa_data_v4.dta")
+elsa_wave6_core <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_6_elsa_data_v2.dta")
+elsa_wave7_core <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_7_elsa_data.dta")
+elsa_wave8_core <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_8_elsa_data_eul_v2.dta")
+elsa_wave9_core <- read_dta("./data/UKDA-5050-stata/stata/stata13_se/wave_9_elsa_data_eul_v2.dta")
+
+
+```{r}
+```
+
+
+
+# 2012–2018 for MHAS (waves 3–5)
+```{r}
+```
+
+```{r}
 ```
