@@ -17,7 +17,10 @@ library(survival)
 library(readr)
 library(tableone)
 library(forestplot)
+library(coxme)
 ```
+
+1周3次以上
 
 
 # 2008–2018 for HRS (waves 9–14), 
@@ -202,30 +205,13 @@ HRS_9_14_inclusion = HRS_9_14 |>
   )) %>%
   # 2. 分别将“1,2,3=活跃(0)；4,5=不活跃(1)”进行二值转换
   mutate(
-    vigorous_inactive = case_when(
-      R9VGACTX %in% c(4, 5) ~ 1,   # 1-3次/月 或 几乎没有
-      R9VGACTX %in% c(1, 2, 3) ~ 0, # 至少每周1次
+    physical_activity_binary = case_when(
+      R9VGACTX %in% c(1, 2) ~ 1,  
+      R9VGACTX %in% c(3, 4, 5) ~ 0, 
       TRUE ~ NA_real_
     ),
-    moderate_inactive = case_when(
-      R9MDACTX %in% c(4, 5) ~ 1,   # 1-3次/月 或 几乎没有
-      R9MDACTX %in% c(1, 2, 3) ~ 0, # 至少每周1次
-      TRUE ~ NA_real_
-    )
-  ) %>%
-  # 3. 综合：如果你想“只要有任一题目足够活跃 => 整体 = 0；只有当两题都不活跃 => 整体 = 1”
-  #   那么 physical_inactivity_binary = 1 当 vigorous_inactive=1 且 moderate_inactive=1
-  #   否则 physical_inactivity_binary=0
-  mutate(
-    physical_inactivity_binary = case_when(
-      vigorous_inactive == 1 & moderate_inactive == 1 ~ 1,  # 两个都不活跃 => 不活跃
-      (!is.na(vigorous_inactive) & vigorous_inactive == 0) |
-      (!is.na(moderate_inactive) & moderate_inactive == 0) ~ 0, # 任一活跃 => 整体活跃
-      TRUE ~ NA_real_
-    ),
-    # 如需转成因子
-    physical_inactivity = factor(
-      physical_inactivity_binary,
+    vigor_pa = factor(
+      physical_activity_binary,
       levels = c(0, 1),
       labels = c("No", "Yes")
     )
@@ -236,8 +222,8 @@ HRS_9_14_inclusion = HRS_9_14 |>
       # 当前吸烟者(Current smoker)
       R9SMOKEN == 1 ~ "Current smoker",
       
-      # 曾经吸烟但现在不吸烟者(Former smoker)
-      R9SMOKEN == 0 & R9SMOKEV == 1 ~ "Former smoker",
+      # 曾经吸烟但现在不吸烟者(Past smoker)
+      R9SMOKEN == 0 & R9SMOKEV == 1 ~ "Past smoker",
       
       # 从不吸烟者(Non-smoker)
       R9SMOKEN == 0 & R9SMOKEV == 0 ~ "Non-smoker",
@@ -261,7 +247,7 @@ HRS_9_14_inclusion = HRS_9_14 |>
       na.rm = TRUE
     )
   ) |>
-   filter(!is.na(ncd_count),!is.na(Smoking), !is.na(physical_inactivity))
+   filter(!is.na(ncd_count),!is.na(Smoking), !is.na(vigor_pa))
 
 ```
 
@@ -331,7 +317,7 @@ HRS_9_14_inclusion_final_df = HRS_9_14_inclusion_final|>
       # Outcomes:
       R9CESD,R10CESD,R11CESD,R12CESD,R13CESD,R14CESD, #depression
       #EMM: 
-      physical_inactivity,
+      vigor_pa,
       # Baseline characteristics
       estimated_age_at_R9, # Median age (IQR), years
       RAGENDER,# Sex
@@ -390,7 +376,7 @@ HRS_9_14_inclusion_final_df = HRS_9_14_inclusion_final|>
           is.na(RARACEM) | is.na(RAHISPAN) ~ "Missing",
           
           # Hispanic (any race)
-          RAHISPAN == 1 ~ "Hispanic",
+          RAHISPAN == 1 ~ "non-White",
           
           # Non-Hispanic by race
           RAHISPAN == 0 & RARACEM == 1 ~ "White",
@@ -440,7 +426,7 @@ HRS_9_14_inclusion_cox_df = HRS_9_14_inclusion_final_df |>
   ) |>
   select(-RAHISPAN, -RARACEM, -ends_with("CESD"), -ends_with("ACTX"),  -Family_income) |>
   mutate(
-    social_isolation = factor(social_isolation, levels = c(1, 0), labels = c("isolated", "integrated")),
+    social_isolation = factor(social_isolation, levels = c(1, 0), labels = c("Yes", "No")),
     Loneliness = factor(Loneliness, levels = c(0, 1), labels = c("Not lonely", "Lonely")),
     Sex = factor(Sex, levels = c(1, 2), labels = c("Male", "Female")),
     Marital_status = factor(Marital_status, levels = c(1,2,3,4,5,6,7,8),
@@ -491,7 +477,7 @@ categorical_vars <- c("social_isolation","Loneliness", "Sex", "race", "Marital_s
 # 创建Table 1
 table1_HRS <- CreateTableOne(
   vars = vars,
-  strata = "physical_inactivity",
+  strata = "vigor_pa",
   data = HRS_9_14_inclusion_cox_df,
   factorVars = categorical_vars
 )
@@ -507,7 +493,7 @@ write_csv(as.data.frame(table1_HRS_df), "./data/cleaned/HRS_9_14_table1_generic.
 
 ```{r}
 HRS_9_14_inclusion_cox_df　|>
-  select(categorical_vars, physical_inactivity)|>
+  select(categorical_vars, vigor_pa)|>
   pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")|>
   ggplot(aes(x = factor(Value), fill = Variable)) +
   geom_bar() +
@@ -523,9 +509,9 @@ HRS_9_14_inclusion_cox_df　|>
 
 ```{r}
 HRS_9_14_inclusion_cox_df |>
-  select(physical_inactivity, categorical_vars) |>
-  pivot_longer(cols = -physical_inactivity, names_to = "Variable", values_to = "Value") |>
-  ggplot(aes(x = factor(Value), fill = factor(physical_inactivity))) +
+  select(vigor_pa, categorical_vars) |>
+  pivot_longer(cols = -vigor_pa, names_to = "Variable", values_to = "Value") |>
+  ggplot(aes(x = factor(Value), fill = factor(vigor_pa))) +
   geom_bar(position = "dodge") +   # 改为 "fill" 可以显示比例
   facet_wrap(~ Variable, scales = "free_x") +
   labs(
@@ -571,13 +557,13 @@ cox_model_lonely_adj <- coxph(Surv(time, event) ~ loneliness + age + sex + race 
                               bmi + smoking + alcohol + ncd,
                               data = hrs_data_std)
 
-# 模型3：调整协变量模型，额外加入 physical_inactivity 作为共变量
-cox_model_lonely_pi <- coxph(Surv(time, event) ~ loneliness + physical_inactivity + age + sex + race + mar_status + education + employment +
+# 模型3：调整协变量模型，额外加入 vigor_pa 作为共变量
+cox_model_lonely_pi <- coxph(Surv(time, event) ~ loneliness + vigor_pa + age + sex + race + mar_status + education + employment +
                              bmi + smoking + alcohol + ncd,
                              data = hrs_data_std)
 
-# 模型4：包含 loneliness 与 physical_inactivity 交互项的模型
-cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness * physical_inactivity + age + sex + race + mar_status + education + employment +
+# 模型4：包含 loneliness 与 vigor_pa 交互项的模型
+cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness * vigor_pa + age + sex + race + mar_status + education + employment +
                               bmi + smoking + alcohol + ncd,
                               data = hrs_data_std)
 
@@ -615,8 +601,8 @@ upper4   <- summary_lonely_emm$conf.int["lonelinessLonely", "upper .95"]
 p4       <- summary_lonely_emm$coefficients["lonelinessLonely", "Pr(>|z|)"]
 
 ## 交互项效果（乘法交互）提取
-# 假设交互项名称为 "lonelinessLonely:physical_inactivityYes"
-interaction_term <- "lonelinessLonely:physical_inactivityYes"
+# 假设交互项名称为 "lonelinessLonely:vigor_paYes"
+interaction_term <- "lonelinessLonely:vigor_paYes"
 interaction_coef <- summary_lonely_emm$coefficients[interaction_term, "coef"]
 interaction_hr   <- summary_lonely_emm$conf.int[interaction_term, "exp(coef)"]
 interaction_lower<- summary_lonely_emm$conf.int[interaction_term, "lower .95"]
@@ -637,19 +623,19 @@ cat("p 值:", interaction_p, "\n\n")
 ########################################
 # 提取各参数系数
 beta_lonely <- summary_lonely_emm$coefficients["lonelinessLonely", "coef"]     # loneliness 主效应
-beta_pi     <- summary_lonely_emm$coefficients["physical_inactivityYes", "coef"] # physical_inactivity 主效应
+beta_pi     <- summary_lonely_emm$coefficients["vigor_paYes", "coef"] # vigor_pa 主效应
 beta_int    <- interaction_coef                                               # 交互项
 
 # 计算各暴露组合的 HR
-HR10 <- exp(beta_lonely)                      # loneliness alone (physical_inactivity = 0)
-HR01 <- exp(beta_pi)                          # physical_inactivity alone (loneliness = 0)
+HR10 <- exp(beta_lonely)                      # loneliness alone (vigor_pa = 0)
+HR01 <- exp(beta_pi)                          # vigor_pa alone (loneliness = 0)
 HR11 <- exp(beta_lonely + beta_pi + beta_int)  # both exposures
 
 RERI <- HR11 - HR10 - HR01 + 1
 
 cat("【加性交互 (RERI)】\n")
 cat("HR (loneliness alone) =", HR10, "\n")
-cat("HR (physical_inactivity alone) =", HR01, "\n")
+cat("HR (vigor_pa alone) =", HR01, "\n")
 cat("HR (both exposures) =", HR11, "\n")
 cat("RERI =", RERI, "\n")
 
@@ -658,7 +644,7 @@ cat("RERI =", RERI, "\n")
 ##############################################
 # 获取交互模型的协方差矩阵，并提取相关参数的子矩阵
 V <- vcov(cox_model_lonely_emm)
-param_names <- c("lonelinessLonely", "physical_inactivityYes", interaction_term)
+param_names <- c("lonelinessLonely", "vigor_paYes", interaction_term)
 V_sub <- V[param_names, param_names]
 
 # 计算 RERI 关于各系数的偏导数
@@ -734,7 +720,7 @@ forestplot(
 ###############################
 ## Social isolation 模型分析 ##
 ###############################
-hrs_data_std$isolation <- relevel(hrs_data_std$isolation, ref = "integrated")
+hrs_data_std$isolation <- relevel(hrs_data_std$isolation, ref = "No")
 # 模型1：仅包含 isolation 单变量 Cox 模型
 cox_model_iso_raw <- coxph(Surv(time, event) ~ isolation, data = hrs_data_std)
 
@@ -743,13 +729,13 @@ cox_model_iso_adj <- coxph(Surv(time, event) ~ isolation + age + sex + race + ma
                              bmi + smoking + alcohol + ncd,
                            data = hrs_data_std)
 
-# 模型3：调整协变量模型，额外控制 physical_inactivity 作为共变量
-cox_model_iso_pi <- coxph(Surv(time, event) ~ isolation + physical_inactivity + age + sex + race + mar_status + education + employment +
+# 模型3：调整协变量模型，额外控制 vigor_pa 作为共变量
+cox_model_iso_pi <- coxph(Surv(time, event) ~ isolation + vigor_pa + age + sex + race + mar_status + education + employment +
                             bmi + smoking + alcohol + ncd,
                           data = hrs_data_std)
 
-# 模型4：包含 isolation 与 physical_inactivity 交互项的 Cox 模型
-cox_model_iso_emm <- coxph(Surv(time, event) ~ isolation * physical_inactivity + age + sex + race + mar_status + education + employment +
+# 模型4：包含 isolation 与 vigor_pa 交互项的 Cox 模型
+cox_model_iso_emm <- coxph(Surv(time, event) ~ isolation * vigor_pa + age + sex + race + mar_status + education + employment +
                              bmi + smoking + alcohol + ncd,
                            data = hrs_data_std)
 ```
@@ -760,36 +746,36 @@ cox_model_iso_emm <- coxph(Surv(time, event) ~ isolation * physical_inactivity +
 ## 结果提取及打印
 ###################################
 
-# 提取模型1结果（假定 isolation 的待检验水平为 "Socially isolated"）
+# 提取模型1结果（假定 isolation 的待检验水平为 "Yes"）
 summary_iso_raw <- summary(cox_model_iso_raw)
-hr_iso1       <- summary_iso_raw$conf.int["isolationisolated", "exp(coef)"]
-lower_ci_iso1 <- summary_iso_raw$conf.int["isolationisolated", "lower .95"]
-upper_ci_iso1 <- summary_iso_raw$conf.int["isolationisolated", "upper .95"]
-p_val_iso1    <- summary_iso_raw$coefficients["isolationisolated", "Pr(>|z|)"]
+hr_iso1       <- summary_iso_raw$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso1 <- summary_iso_raw$conf.int["isolationYes", "lower .95"]
+upper_ci_iso1 <- summary_iso_raw$conf.int["isolationYes", "upper .95"]
+p_val_iso1    <- summary_iso_raw$coefficients["isolationYes", "Pr(>|z|)"]
 
 # 提取模型2结果
 summary_iso_adj <- summary(cox_model_iso_adj)
-hr_iso2       <- summary_iso_adj$conf.int["isolationisolated", "exp(coef)"]
-lower_ci_iso2 <- summary_iso_adj$conf.int["isolationisolated", "lower .95"]
-upper_ci_iso2 <- summary_iso_adj$conf.int["isolationisolated", "upper .95"]
-p_val_iso2    <- summary_iso_adj$coefficients["isolationisolated", "Pr(>|z|)"]
+hr_iso2       <- summary_iso_adj$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso2 <- summary_iso_adj$conf.int["isolationYes", "lower .95"]
+upper_ci_iso2 <- summary_iso_adj$conf.int["isolationYes", "upper .95"]
+p_val_iso2    <- summary_iso_adj$coefficients["isolationYes", "Pr(>|z|)"]
 
 # 提取模型3结果
 summary_iso_pi <- summary(cox_model_iso_pi)
-hr_iso3       <- summary_iso_pi$conf.int["isolationisolated", "exp(coef)"]
-lower_ci_iso3 <- summary_iso_pi$conf.int["isolationisolated", "lower .95"]
-upper_ci_iso3 <- summary_iso_pi$conf.int["isolationisolated", "upper .95"]
-p_val_iso3    <- summary_iso_pi$coefficients["isolationisolated", "Pr(>|z|)"]
+hr_iso3       <- summary_iso_pi$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso3 <- summary_iso_pi$conf.int["isolationYes", "lower .95"]
+upper_ci_iso3 <- summary_iso_pi$conf.int["isolationYes", "upper .95"]
+p_val_iso3    <- summary_iso_pi$coefficients["isolationYes", "Pr(>|z|)"]
 
 # 提取模型4结果 - isolation 主效应
 summary_iso_emm <- summary(cox_model_iso_emm)
-hr_iso4       <- summary_iso_emm$conf.int["isolationisolated", "exp(coef)"]
-lower_ci_iso4 <- summary_iso_emm$conf.int["isolationisolated", "lower .95"]
-upper_ci_iso4 <- summary_iso_emm$conf.int["isolationisolated", "upper .95"]
-p_val_iso4    <- summary_iso_emm$coefficients["isolationisolated", "Pr(>|z|)"]
+hr_iso4       <- summary_iso_emm$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso4 <- summary_iso_emm$conf.int["isolationYes", "lower .95"]
+upper_ci_iso4 <- summary_iso_emm$conf.int["isolationYes", "upper .95"]
+p_val_iso4    <- summary_iso_emm$coefficients["isolationYes", "Pr(>|z|)"]
 
-# 交互项效果提取（假设交互项名称为 "isolationisolated:physical_inactivityYes"）
-interaction_term_iso <- "isolationisolated:physical_inactivityYes"
+# 交互项效果提取（假设交互项名称为 "isolationYes:vigor_paYes"）
+interaction_term_iso <- "isolationYes:vigor_paYes"
 interaction_coef_iso <- summary_iso_emm$coefficients[interaction_term_iso, "coef"]
 interaction_hr_iso   <- summary_iso_emm$conf.int[interaction_term_iso, "exp(coef)"]
 interaction_lower_iso<- summary_iso_emm$conf.int[interaction_term_iso, "lower .95"]
@@ -810,13 +796,13 @@ cat("p 值:", interaction_p_iso, "\n\n")
 ## Additive interaction (RERI) 计算
 #############################################
 # 提取系数：
-beta_iso <- summary_iso_emm$coefficients["isolationisolated", "coef"]
-beta_pi  <- summary_iso_emm$coefficients["physical_inactivityYes", "coef"]
+beta_iso <- summary_iso_emm$coefficients["isolationYes", "coef"]
+beta_pi  <- summary_iso_emm$coefficients["vigor_paYes", "coef"]
 beta_int <- interaction_coef_iso
 
 # 计算各暴露组合的风险比
-HR10 <- exp(beta_iso)                      # isolation alone (physical_inactivity = 0)
-HR01 <- exp(beta_pi)                       # physical_inactivity alone (isolation = 0)
+HR10 <- exp(beta_iso)                      # isolation alone (vigor_pa = 0)
+HR01 <- exp(beta_pi)                       # vigor_pa alone (isolation = 0)
 HR11 <- exp(beta_iso + beta_pi + beta_int)   # 同时暴露 (both)
 
 RERI <- HR11 - HR10 - HR01 + 1
@@ -832,7 +818,7 @@ cat("RERI =", RERI, "\n")
 #############################################
 # 获取交互模型的协方差矩阵
 V <- vcov(cox_model_iso_emm)
-param_names <- c("isolationisolated", "physical_inactivityYes", "isolationisolated:physical_inactivityYes")
+param_names <- c("isolationYes", "vigor_paYes", "isolationYes:vigor_paYes")
 V_sub <- V[param_names, param_names]
 
 # 计算 RERI 关于各系数的偏导数
@@ -859,7 +845,62 @@ cat("p 值 =", p_RERI, "\n")
 
 ```
 
+```{r}
+# 先装载所需包
+if (!require(forestplot)) install.packages("forestplot")
+library(forestplot)
+library(grid)
 
+# 1. 准备 labeltext（左侧表格文字）
+tabletext_iso <- cbind(
+  c("Model",
+    "Isolation only",
+    "Adjusted",
+    "Adj + PI",
+    "Interaction model"),
+  c("HR (95% CI)",
+    paste0(sprintf("%.2f", hr_iso1), " (", sprintf("%.2f", lower_ci_iso1), "-", sprintf("%.2f", upper_ci_iso1), ")"),
+    paste0(sprintf("%.2f", hr_iso2), " (", sprintf("%.2f", lower_ci_iso2), "-", sprintf("%.2f", upper_ci_iso2), ")"),
+    paste0(sprintf("%.2f", hr_iso3), " (", sprintf("%.2f", lower_ci_iso3), "-", sprintf("%.2f", upper_ci_iso3), ")"),
+    paste0(sprintf("%.2f", hr_iso4), " (", sprintf("%.2f", lower_ci_iso4), "-", sprintf("%.2f", upper_ci_iso4), ")")
+  ),
+  c("p‑value",
+    ifelse(p_val_iso1 < 0.001, "<0.001", sprintf("%.3f", p_val_iso1)),
+    ifelse(p_val_iso2 < 0.001, "<0.001", sprintf("%.3f", p_val_iso2)),
+    ifelse(p_val_iso3 < 0.001, "<0.001", sprintf("%.3f", p_val_iso3)),
+    ifelse(p_val_iso4 < 0.001, "<0.001", sprintf("%.3f", p_val_iso4))
+  )
+)
+
+# 2. 准备数值数据（注意，第一个元素要填 NA 对齐 header 行）
+forest_data_iso <- data.frame(
+  mean  = c(NA, hr_iso1,   hr_iso2,   hr_iso3,   hr_iso4),
+  lower = c(NA, lower_ci_iso1, lower_ci_iso2, lower_ci_iso3, lower_ci_iso4),
+  upper = c(NA, upper_ci_iso1, upper_ci_iso2, upper_ci_iso3, upper_ci_iso4)
+)
+
+# 3. 绘图
+forestplot(
+  labeltext   = tabletext_iso,
+  mean        = forest_data_iso$mean,
+  lower       = forest_data_iso$lower,
+  upper       = forest_data_iso$upper,
+  is.summary  = c(TRUE, rep(FALSE, 4)),  # 第一行当作表头
+  zero        = 1,                      # 虚线在 HR=1 处
+  boxsize     = 0.2,
+  lineheight  = "auto",
+  hrzl_lines  = list("2" = gpar(lty = 2)),  # 在 header 和第一行结果之间画虚线
+  xlab        = "Hazard Ratio (95% CI)",
+  txt_gp      = fpTxtGp(
+                   label = gpar(cex = 1.1),
+                   ticks = gpar(cex = 0.9),
+                   xlab  = gpar(cex = 1.1),
+                   title = gpar(cex = 1.2)
+                 ),
+  title       = "Social Isolation 与抑郁风险的关联"
+)
+
+```
 
 
 
@@ -941,11 +982,11 @@ elsa_baseline = elsa_wave4_core|>
     mutate(
       social_isolation_binary = if_else(total_social_yes == 0, 1, 0)
     ) |>
-    # 4.4 转换为因子：0 = "Socially integrated", 1 = "Socially isolated"
+    # 4.4 转换为因子：0 = "Socially integrated", 1 = "Yes"
     mutate(
       Social_isolation = factor(social_isolation_binary,
                                 levels = c(0, 1),
-                                labels = c("Socially integrated", "Socially isolated"))
+                                labels = c("No", "Yes"))
     )|>
   # Step 5: 建立 Physical inactivity 指标
     # 5.1 对 heacta 和 heactb 进行无效值处理（将 -9, -8, -2, -1 转为 NA）
@@ -971,14 +1012,14 @@ elsa_baseline = elsa_wave4_core|>
     # 5.3 综合两个指标：只要任一项显示活跃（0），则总体上视为“活跃”（physical inactivity = 0），
     #     仅当两项均为低频（1）时，定义为身体不活跃 (physical inactivity = 1)
     mutate(
-      physical_inactivity_binary = case_when(
+      vigor_pa_binary = case_when(
         (!is.na(vigorous_active) & vigorous_active == 1) | (!is.na(moderate_active) & moderate_active == 1) ~ 0,
         (vigorous_active == 0 & moderate_active == 0) ~ 1,
         TRUE ~ NA_real_
       )
     ) |>
     # 5.4 转换为因子变量
-    mutate(Physical_inactivity = factor(physical_inactivity_binary, levels = c(0, 1),labels = c("No", "Yes"))
+    mutate(vigor_pa = factor(vigor_pa_binary, levels = c(0, 1),labels = c("No", "Yes"))
            )|>
   
   # Step 6: 处理 dimar 变量，将无效值转换为 NA（如未提前处理）
@@ -1107,11 +1148,11 @@ elsa_baseline = elsa_wave4_core|>
       # 3. 如果某行全部指标均缺失，则 ncd_count 设为 NA；否则 ncd_count 用 ncd_sum 表示总数
       mutate(
         ncd_count = if_else(ncd_non_missing == 0, NA_real_, ncd_sum),
-        # 根据 ncd_count 构建 NCDs 指标：至少有1项疾病归为 "1 or more"，否则 "None"
-        NCDs = if_else(ncd_count >= 1, "1 or more", "None")) |>
-      # 4. 转换为因子，设定水平为 "None" 和 "1 or more"
+        # 根据 ncd_count 构建 NCDs 指标：至少有1项疾病归为 "One or more"，否则 "None"
+        NCDs = if_else(ncd_count >= 1, "One or more", "None")) |>
+      # 4. 转换为因子，设定水平为 "None" 和 "One or more"
       mutate(
-        NCDs = factor(NCDs, levels = c("None", "1 or more"))
+        NCDs = factor(NCDs, levels = c("None", "One or more"))
       )|>
   # Step 12: 建立 NCDs 指标
       mutate(
@@ -1174,7 +1215,7 @@ Frequency does moderate sports or activities:`heactb`
 
 NCDs 
 1. None:  Participants do not have any communicable diseases. 
-2. 1 or more: Participants have at least one communicable disease: 
+2. One or more: Participants have at least one communicable disease: 
         hypertension, `hedacbp`
         heart problems: `hedacan`,`hedacmi`, ` hedachf`, `hedachm`, `hedacar`, 
         stroke, `hedacst`
@@ -1206,12 +1247,12 @@ elsa_baseline_bmi <- elsa_baseline %>%
                                   bmival)) %>%
   mutate(
     BMI = case_when(
-      bmival_imputed < 25 ~ "Underweight or normal weight",
+      bmival_imputed < 25 ~ "Underweight or healthy weight",
       bmival_imputed >= 25 & bmival_imputed < 30 ~ "Overweight",
       bmival_imputed >= 30 ~ "Obesity",
       TRUE ~ NA_character_
     ),
-    BMI = factor(BMI, levels = c("Underweight or normal weight", "Overweight", "Obesity"))
+    BMI = factor(BMI, levels = c("Underweight or healthy weight", "Overweight", "Obesity"))
   )
 
 # 查看各变量缺失数量
@@ -1220,7 +1261,7 @@ elsa_baseline_bmi %>%
     miss_age = sum(is.na(indager)),
     miss_Social_isolation = sum(is.na(Social_isolation)),
     miss_Loneliness = sum(is.na(Loneliness)),
-    miss_Physical_inactivity = sum(is.na(Physical_inactivity)),
+    miss_vigor_pa = sum(is.na(vigor_pa)),
     miss_indsex = sum(is.na(indsex)),
     miss_Marital_status = sum(is.na(Marital_status)),
     miss_Education = sum(is.na(Education)),
@@ -1243,7 +1284,7 @@ elsa_baseline_non_na = elsa_baseline_bmi |>
     filter(
       !is.na(Social_isolation),  #Social activities: Respondent is NOT a member of any organisations, clubs or societies
       !is.na(Loneliness), #  felt loneliness
-      !is.na(Physical_inactivity), # PA
+      !is.na(vigor_pa), # PA
       !is.na(indsex),# sex
       !is.na(Marital_status),# marital status
       !is.na(Education),# Education
@@ -1421,7 +1462,7 @@ followup_summary <- elsa_long_followup %>%
 
 elsa_cox_data <- elsa_baseline_non_na |>
   select(idauniq, indager, indsex, Marital_status, Education, Employment_status, BMI, 
-         Alcohol_consumption, Smoke, NCDs, race, Social_isolation, Loneliness, Physical_inactivity)|>
+         Alcohol_consumption, Smoke, NCDs, race, Social_isolation, Loneliness, vigor_pa)|>
   left_join(followup_summary, by = "idauniq")|>
   drop_na(event_time,depression_event )|>
   select(-any_event, -non_missing_cesd)
@@ -1448,7 +1489,7 @@ elsa_data_std <- elsa_cox_data |>
     ncd = NCDs,
     isolation = Social_isolation,
     loneliness = Loneliness,
-    physical_inactivity = Physical_inactivity,
+    vigor_pa = vigor_pa,
     event = depression_event,
     time = event_time
   ) %>%
@@ -1472,10 +1513,10 @@ vars <- c("age", "sex", "race", "mar_status", "education", "employment",
 categorical_vars <- c("isolation", "loneliness", "sex", "race", "mar_status", "education", "employment", 
                       "smoking", "alcohol", "ncd", "bmi")
 
-# 创建 Table 1，假设 Physical_inactivity（这里统一为 inactivity）是分层变量
+# 创建 Table 1，假设 vigor_pa（这里统一为 inactivity）是分层变量
 table1_generic <- CreateTableOne(
   vars = vars,
-  strata = "physical_inactivity",
+  strata = "vigor_pa",
   data = dataset_std,
   factorVars = categorical_vars
 )
@@ -1493,10 +1534,10 @@ write_csv(as.data.frame(table_df), "./data/cleaned/ELSA_3_5_table1_generic.csv")
 # 图2：按 Physical inactivity 分组的各分类变量分布
 
 dataset_std %>%
-  select(physical_inactivity, categorical_vars) %>%
+  select(vigor_pa, categorical_vars) %>%
   mutate(across(everything(), ~ as.character(.)))|>
-  pivot_longer(cols = -physical_inactivity, names_to = "Variable", values_to = "Value") %>%
-  ggplot(aes(x = factor(Value), fill = factor(physical_inactivity))) +
+  pivot_longer(cols = -vigor_pa, names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = factor(Value), fill = factor(vigor_pa))) +
   geom_bar(position = "dodge") +
   facet_wrap(~ Variable, scales = "free_x") +
   labs(
@@ -1529,15 +1570,15 @@ cox_model_lonely_adj <- coxph(Surv(time, event) ~ loneliness +
                                 bmi + smoking + alcohol + ncd,
                               data = dataset_std)
 
-# 模型3：调整physical_inactivity、人口统计和健康相关协变量的 Cox 模型
-cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness + physical_inactivity + 
+# 模型3：调整vigor_pa、人口统计和健康相关协变量的 Cox 模型
+cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness + vigor_pa + 
                                 age + sex + race + mar_status + education + employment+
                                 bmi + smoking + alcohol + ncd,
                               data = dataset_std)
 
 
-# 模型4：包含 loneliness 与 physical_inactivity 交互项的 Cox 模型
-cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness * physical_inactivity + 
+# 模型4：包含 loneliness 与 vigor_pa 交互项的 Cox 模型
+cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness * vigor_pa + 
                                 age + sex + race + mar_status + education + employment+
                                 bmi + smoking + alcohol + ncd,
                               data = dataset_std)
@@ -1576,16 +1617,16 @@ lower4 <- summary_lonely_emm$conf.int["lonelinessLonely", "lower .95"]
 upper4 <- summary_lonely_emm$conf.int["lonelinessLonely", "upper .95"]
 p4 <- summary_lonely_emm$coefficients["lonelinessLonely", "Pr(>|z|)"]
 
-# 提取交互项效果（假设交互项名称为 "lonelinessLonely:physical_inactivityLow activity"，
-# 表示当 physical_inactivity 为 "Low activity" 时，loneliness 效应的额外修正）
-interaction_term <- "lonelinessLonely:physical_inactivityYes"
+# 提取交互项效果（假设交互项名称为 "lonelinessLonely:vigor_paLow activity"，
+# 表示当 vigor_pa 为 "Low activity" 时，loneliness 效应的额外修正）
+interaction_term <- "lonelinessLonely:vigor_paYes"
 interaction_coef <- summary_lonely_emm$coefficients[interaction_term, "coef"]
 interaction_hr   <- summary_lonely_emm$conf.int[interaction_term, "exp(coef)"]
 interaction_lower <- summary_lonely_emm$conf.int[interaction_term, "lower .95"]
 interaction_upper <- summary_lonely_emm$conf.int[interaction_term, "upper .95"]
 interaction_p     <- summary_lonely_emm$coefficients[interaction_term, "Pr(>|z|)"]
 
-cat("交互项 (Loneliness:Physical_inactivity) 效应:\n")
+cat("交互项 (Loneliness:vigor_pa) 效应:\n")
 cat("系数:", interaction_coef, "\n")
 cat("风险比 (HR):", interaction_hr, "\n")
 cat("95% CI:", interaction_lower, "-", interaction_upper, "\n")
@@ -1610,12 +1651,12 @@ cat("p 值:", interaction_p, "\n\n")
 ###################################
 # 提取相关系数（确保名称与模型输出一致）
 beta_iso <- summary_lonely_emm$coefficients["lonelinessLonely", "coef"]       # loneliness 主效应
-beta_pi  <- summary_lonely_emm$coefficients["physical_inactivityYes", "coef"]  # physical_inactivity 主效应
+beta_pi  <- summary_lonely_emm$coefficients["vigor_paYes", "coef"]  # vigor_pa 主效应
 beta_int <- interaction_coef                                                  # 交互项
 
 # 计算各暴露组合下的风险比
 HR10 <- exp(beta_iso)                            # loneliness alone (X=1, Z=0)
-HR01 <- exp(beta_pi)                             # physical_inactivity alone (X=0, Z=1)
+HR01 <- exp(beta_pi)                             # vigor_pa alone (X=0, Z=1)
 HR11 <- exp(beta_iso + beta_pi + beta_int)         # 双重暴露 (X=1, Z=1)
 
 RERI <- HR11 - HR10 - HR01 + 1
@@ -1631,8 +1672,8 @@ cat("RERI =", RERI, "\n")
 ###################################
 # 获取模型协方差矩阵
 V <- vcov(cox_model_lonely_emm)
-# 按顺序提取相关参数协方差子矩阵（假定参数顺序为 loneliness, physical_inactivity, 交互项）
-param_names <- c("lonelinessLonely", "physical_inactivityYes", interaction_term)
+# 按顺序提取相关参数协方差子矩阵（假定参数顺序为 loneliness, vigor_pa, 交互项）
+param_names <- c("lonelinessLonely", "vigor_paYes", interaction_term)
 V_sub <- V[param_names, param_names]
 
 # 计算 RERI 关于各参数的偏导数
@@ -1658,13 +1699,6 @@ cat("z =", z_RERI, "\n")
 cat("p 值 =", p_RERI, "\n")
 
 ```
-
-
-```{r}
-
-```
-
-
 
 
 
@@ -1723,31 +1757,6 @@ lrt_result <- anova(cox_model_lonely_adj, cox_model_lonely_emm, test = "LRT")
 print(lrt_result)
 ```
 
-### 亚组分析 - 根据 physical_inactivity
-```{r}
-# 身体活跃组（physical_inactivity 为 "No"）
-active_group <- dataset_std %>% filter(physical_inactivity == "No")
-cox_active <- coxph(Surv(time, event) ~ loneliness + age + sex + race + mar_status + education + employment +
-                      bmi + smoking + alcohol + ncd,
-                    data = active_group)
-
-# 身体不活跃组（physical_inactivity 为 "Yes"）
-inactive_group <- dataset_std %>% filter(physical_inactivity == "Yes")
-cox_inactive <- coxph(Surv(time, event) ~ loneliness + age + sex + race + mar_status + education + employment +
-                        bmi + smoking + alcohol + ncd,
-                      data = inactive_group)
-
-cat("\n亚组 (身体活跃组) 中 Loneliness 的效应:\n")
-print(summary(cox_active)$conf.int["lonelinessLonely", c("exp(coef)", "lower .95", "upper .95")])
-cat("p值:", summary(cox_active)$coefficients["lonelinessLonely", "Pr(>|z|)"], "\n")
-
-cat("\n亚组 (身体不活跃组) 中 Loneliness 的效应:\n")
-print(summary(cox_inactive)$conf.int["lonelinessLonely", c("exp(coef)", "lower .95", "upper .95")])
-cat("p值:", summary(cox_inactive)$coefficients["lonelinessLonely", "Pr(>|z|)"], "\n")
-
-```
-
-
 
 
 ## SSI
@@ -1766,13 +1775,13 @@ cox_model_iso_adj <- coxph(Surv(time, event) ~ isolation + age + sex + race + ma
                              bmi + smoking + alcohol + ncd,
                            data = dataset_std)
 
-# 模型3：在模型中加入 physical_inactivity 作为协变量（调整模型中额外控制身体活动）
-cox_model_iso_pi <- coxph(Surv(time, event) ~ isolation + physical_inactivity + age + sex + race + mar_status + education + employment +
+# 模型3：在模型中加入 vigor_pa 作为协变量（调整模型中额外控制身体活动）
+cox_model_iso_pi <- coxph(Surv(time, event) ~ isolation + vigor_pa + age + sex + race + mar_status + education + employment +
                             bmi + smoking + alcohol + ncd,
                           data = dataset_std)
 
-# 模型4：包含 isolation 与 physical_inactivity 交互项的 Cox 模型
-cox_model_iso_emm <- coxph(Surv(time, event) ~ isolation * physical_inactivity + age + sex + race + mar_status + education + employment +
+# 模型4：包含 isolation 与 vigor_pa 交互项的 Cox 模型
+cox_model_iso_emm <- coxph(Surv(time, event) ~ isolation * vigor_pa + age + sex + race + mar_status + education + employment +
                              bmi + smoking + alcohol + ncd,
                            data = dataset_std)
 ```
@@ -1784,42 +1793,42 @@ cox_model_iso_emm <- coxph(Surv(time, event) ~ isolation * physical_inactivity +
 ```{r}
 # 提取模型1结果
 summary_iso_raw <- summary(cox_model_iso_raw)
-hr_iso1 <- summary_iso_raw$conf.int["isolationSocially isolated", "exp(coef)"]
-lower_ci_iso1 <- summary_iso_raw$conf.int["isolationSocially isolated", "lower .95"]
-upper_ci_iso1 <- summary_iso_raw$conf.int["isolationSocially isolated", "upper .95"]
-p_val_iso1 <- summary_iso_raw$coefficients["isolationSocially isolated", "Pr(>|z|)"]
+hr_iso1 <- summary_iso_raw$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso1 <- summary_iso_raw$conf.int["isolationYes", "lower .95"]
+upper_ci_iso1 <- summary_iso_raw$conf.int["isolationYes", "upper .95"]
+p_val_iso1 <- summary_iso_raw$coefficients["isolationYes", "Pr(>|z|)"]
 
 # 模型2结果
 summary_iso_adj <- summary(cox_model_iso_adj)
-hr_iso2 <- summary_iso_adj$conf.int["isolationSocially isolated", "exp(coef)"]
-lower_ci_iso2 <- summary_iso_adj$conf.int["isolationSocially isolated", "lower .95"]
-upper_ci_iso2 <- summary_iso_adj$conf.int["isolationSocially isolated", "upper .95"]
-p_val_iso2 <- summary_iso_adj$coefficients["isolationSocially isolated", "Pr(>|z|)"]
+hr_iso2 <- summary_iso_adj$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso2 <- summary_iso_adj$conf.int["isolationYes", "lower .95"]
+upper_ci_iso2 <- summary_iso_adj$conf.int["isolationYes", "upper .95"]
+p_val_iso2 <- summary_iso_adj$coefficients["isolationYes", "Pr(>|z|)"]
 
 # 模型3结果
 summary_iso_pi <- summary(cox_model_iso_pi)
-hr_iso3 <- summary_iso_pi$conf.int["isolationSocially isolated", "exp(coef)"]
-lower_ci_iso3 <- summary_iso_pi$conf.int["isolationSocially isolated", "lower .95"]
-upper_ci_iso3 <- summary_iso_pi$conf.int["isolationSocially isolated", "upper .95"]
-p_val_iso3 <- summary_iso_pi$coefficients["isolationSocially isolated", "Pr(>|z|)"]
+hr_iso3 <- summary_iso_pi$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso3 <- summary_iso_pi$conf.int["isolationYes", "lower .95"]
+upper_ci_iso3 <- summary_iso_pi$conf.int["isolationYes", "upper .95"]
+p_val_iso3 <- summary_iso_pi$coefficients["isolationYes", "Pr(>|z|)"]
 
 # 模型4结果 - isolation 主效应
 summary_iso_emm <- summary(cox_model_iso_emm)
-hr_iso4 <- summary_iso_emm$conf.int["isolationSocially isolated", "exp(coef)"]
-lower_ci_iso4 <- summary_iso_emm$conf.int["isolationSocially isolated", "lower .95"]
-upper_ci_iso4 <- summary_iso_emm$conf.int["isolationSocially isolated", "upper .95"]
-p_val_iso4 <- summary_iso_emm$coefficients["isolationSocially isolated", "Pr(>|z|)"]
+hr_iso4 <- summary_iso_emm$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso4 <- summary_iso_emm$conf.int["isolationYes", "lower .95"]
+upper_ci_iso4 <- summary_iso_emm$conf.int["isolationYes", "upper .95"]
+p_val_iso4 <- summary_iso_emm$coefficients["isolationYes", "Pr(>|z|)"]
 
-# 交互项效果提取（假设交互项名称为 "isolationIsolated:physical_inactivityLow activity"，
-# 表示当 physical_inactivity 为 "Low activity" 时，isolation 的额外修正）
-interaction_term_iso <- "isolationSocially isolated:physical_inactivityYes"
+# 交互项效果提取（假设交互项名称为 "isolationYes:vigor_paLow activity"，
+# 表示当 vigor_pa 为 "Low activity" 时，isolation 的额外修正）
+interaction_term_iso <- "isolationYes:vigor_paYes"
 interaction_coef_iso <- summary_iso_emm$coefficients[interaction_term_iso, "coef"]
 interaction_hr_iso   <- summary_iso_emm$conf.int[interaction_term_iso, "exp(coef)"]
 interaction_lower_iso <- summary_iso_emm$conf.int[interaction_term_iso, "lower .95"]
 interaction_upper_iso <- summary_iso_emm$conf.int[interaction_term_iso, "upper .95"]
 interaction_p_iso     <- summary_iso_emm$coefficients[interaction_term_iso, "Pr(>|z|)"]
 
-cat("交互项 (Isolation:Physical_inactivity) 效应:\n")
+cat("交互项 (Isolation:vigor_pa) 效应:\n")
 cat("系数:", interaction_coef_iso, "\n")
 cat("风险比 (HR):", interaction_hr_iso, "\n")
 cat("95% CI:", interaction_lower_iso, "-", interaction_upper_iso, "\n")
@@ -1843,14 +1852,14 @@ cat("p 值:", interaction_p_iso, "\n\n")
 ## Additive interaction (RERI) 计算
 ######################################
 # 提取模型4中各相关系数（请确保名称与模型输出一致）
-beta_iso <- summary_iso_emm$coefficients["isolationSocially isolated", "coef"]      # isolation 主效应
-beta_pi  <- summary_iso_emm$coefficients["physical_inactivityYes", "coef"]             # physical_inactivity 主效应
+beta_iso <- summary_iso_emm$coefficients["isolationYes", "coef"]      # isolation 主效应
+beta_pi  <- summary_iso_emm$coefficients["vigor_paYes", "coef"]             # vigor_pa 主效应
 beta_int <- interaction_coef_iso                                                    # 交互项
 
 # 计算各种暴露组合下的风险比
-HR10 <- exp(beta_iso)                       # isolation alone (when physical_inactivity = 0)
-HR01 <- exp(beta_pi)                        # physical_inactivity alone (when isolation = 0)
-HR11 <- exp(beta_iso + beta_pi + beta_int)    # both exposures (isolation and physical_inactivity)
+HR10 <- exp(beta_iso)                       # isolation alone (when vigor_pa = 0)
+HR01 <- exp(beta_pi)                        # vigor_pa alone (when isolation = 0)
+HR11 <- exp(beta_iso + beta_pi + beta_int)    # both exposures (isolation and vigor_pa)
 
 # RERI 计算公式
 RERI <- HR11 - HR10 - HR01 + 1
@@ -1866,8 +1875,8 @@ cat("RERI =", RERI, "\n")
 ######################################
 # 获取交互模型中相关系数的协方差矩阵
 V <- vcov(cox_model_iso_emm)
-# 提取相关参数的协方差子矩阵，按顺序为 isolation, physical_inactivity, 交互项
-param_names <- c("isolationSocially isolated", "physical_inactivityYes", interaction_term_iso)
+# 提取相关参数的协方差子矩阵，按顺序为 isolation, vigor_pa, 交互项
+param_names <- c("isolationYes", "vigor_paYes", interaction_term_iso)
 V_sub <- V[param_names, param_names]
 
 # 计算 RERI 关于各个参数的偏导数
@@ -1956,26 +1965,26 @@ print(lrt_result_iso)
 
 ```{r}
 #################################
-## 亚组分析：根据 physical_inactivity 分组 ##
+## 亚组分析：根据 vigor_pa 分组 ##
 #################################
-# 身体活跃组（physical_inactivity 为 "No"）
-active_group <- dataset_std %>% filter(physical_inactivity == "No")
+# 身体活跃组（vigor_pa 为 "No"）
+active_group <- dataset_std %>% filter(vigor_pa == "No")
 cox_active_iso <- coxph(Surv(time, event) ~ isolation + age + sex + race + mar_status + education + employment +
                           bmi + smoking + alcohol + ncd,
                         data = active_group)
-# 身体不活跃组（physical_inactivity 为 "Yes"）
-inactive_group <- dataset_std %>% filter(physical_inactivity == "Yes")
+# 身体不活跃组（vigor_pa 为 "Yes"）
+inactive_group <- dataset_std %>% filter(vigor_pa == "Yes")
 cox_inactive_iso <- coxph(Surv(time, event) ~ isolation + age + sex + race + mar_status + education + employment +
                             bmi + smoking + alcohol + ncd,
                           data = inactive_group)
 
 cat("\n身体活跃组中 Isolation 的效应:\n")
-print(summary(cox_active_iso)$conf.int["isolationSocially isolated", c("exp(coef)", "lower .95", "upper .95")])
-cat("p值:", summary(cox_active_iso)$coefficients["isolationSocially isolated", "Pr(>|z|)"], "\n")
+print(summary(cox_active_iso)$conf.int["isolationYes", c("exp(coef)", "lower .95", "upper .95")])
+cat("p值:", summary(cox_active_iso)$coefficients["isolationYes", "Pr(>|z|)"], "\n")
 
 cat("\n身体不活跃组中 Isolation 的效应:\n")
-print(summary(cox_inactive_iso)$conf.int["isolationSocially isolated", c("exp(coef)", "lower .95", "upper .95")])
-cat("p值:", summary(cox_inactive_iso)$coefficients["isolationSocially isolated", "Pr(>|z|)"], "\n")
+print(summary(cox_inactive_iso)$conf.int["isolationYes", c("exp(coef)", "lower .95", "upper .95")])
+cat("p值:", summary(cox_inactive_iso)$coefficients["isolationYes", "Pr(>|z|)"], "\n")
 
 
 ```
@@ -2064,7 +2073,9 @@ mhas_baseline <- mhas |>
                               is.na(sum_valid)      ~ NA_integer_,
                               sum_valid >= 1        ~ 1L,
                               sum_valid == 0        ~ 0L
-                            )
+                            ),
+                            social_isolation = factor(social_isolation,levels = c(0, 1),
+                                labels = c("No", "Yes"))
                           ) |>
                           ungroup() |>
                           # 清理临时变量
@@ -2073,13 +2084,13 @@ mhas_baseline <- mhas |>
 
                     # EMM: PA r3vigact
                       mutate(
-                            physical_inactivity = case_when(
+                            vigor_pa = case_when(
                               r3vigact == 0 ~ 1,
                               r3vigact == 1 ~ 0,
                               TRUE   ~ NA_integer_
                               ),
-                            physical_inactivity = factor(
-                            physical_inactivity,
+                            vigor_pa = factor(
+                            vigor_pa,
                             levels = c(0, 1),
                             labels = c("No", "Yes")
                           )
@@ -2182,15 +2193,15 @@ mhas_baseline <- mhas |>
                         # 4. 如果某行所有 NCD 都缺失，就把计数设 NA，否则用 ncd_sum
                         ncd_count = if_else(ncd_non_missing == 0, NA_real_, as.double(ncd_sum)),
                     
-                        # 5. 构建最终因子：None vs “1 or more”
+                        # 5. 构建最终因子：None vs “One or more”
                         NCDs = factor(
-                          if_else(ncd_count >= 1, "1 or more", "None"),
-                          levels = c("None", "1 or more")
+                          if_else(ncd_count >= 1, "One or more", "None"),
+                          levels = c("None", "One or more")
                         )
                       )|>
 
                       filter(!is.na(social_isolation),
-                             !is.na(physical_inactivity),
+                             !is.na(vigor_pa),
                              !is.na(ragender),
                              !is.na(raedisced),
                              !is.na(unmarried_alone),
@@ -2253,9 +2264,9 @@ mhas_cox = mhas_baseline|>
   )|>
   select(
   rahhidnp,
-  loneliness = r3flone,
+  loneliness,
   social_isolation,
-  physical_inactivity,
+  vigor_pa,
   age = estimated_age_at_R3,
   sex = ragender,
   education,
@@ -2287,7 +2298,7 @@ mhas_data_std <- mhas_cox %>%
     isolation   = social_isolation    # Social_isolation → isolation
     # 其它字段名已经和 ELSA 一致：age, sex, education,
     # employment, bmi, alcohol, loneliness,
-    # physical_inactivity, event, time
+    # vigor_pa, event, time
   ) %>%
   mutate(
     data_source = "MHAS",
@@ -2307,10 +2318,10 @@ vars <- c("age", "sex", "race", "mar_status", "education", "employment",
 categorical_vars <- c("isolation", "loneliness", "sex", "race", "mar_status", "education", "employment", 
                       "smoking", "alcohol", "ncd", "bmi")
 
-# 创建 Table 1，假设 Physical_inactivity（这里统一为 inactivity）是分层变量
+# 创建 Table 1，假设 vigor_pa（这里统一为 inactivity）是分层变量
 table1_generic <- CreateTableOne(
   vars = vars,
-  strata = "physical_inactivity",
+  strata = "vigor_pa",
   data = dataset_std,
   factorVars = categorical_vars
 )
@@ -2336,24 +2347,1009 @@ cox_model_lonely_adj <- coxph(Surv(time, event) ~ loneliness +
                                 bmi + smoking + alcohol + ncd,
                               data = dataset_std)
 
-# 模型3：调整physical_inactivity、人口统计和健康相关协变量的 Cox 模型
-cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness + physical_inactivity + 
+# 模型3：调整vigor_pa、人口统计和健康相关协变量的 Cox 模型
+cox_model_lonely_pi<- coxph(Surv(time, event) ~ loneliness + vigor_pa + 
                                 age + sex + mar_status + education + employment+
                                 bmi + smoking + alcohol + ncd,
                               data = dataset_std)
 
 
-# 模型4：包含 loneliness 与 physical_inactivity 交互项的 Cox 模型
-cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness * physical_inactivity + 
+# 模型4：包含 loneliness 与 vigor_pa 交互项的 Cox 模型
+cox_model_lonely_emm <- coxph(Surv(time, event) ~ loneliness * vigor_pa + 
                                 age + sex + mar_status + education + employment+
                                 bmi + smoking + alcohol + ncd,
                               data = dataset_std)
+```
+
+
+#### Model result (Forest values)
+```{r}
+# 模型1结果
+summary_lonely_raw <- summary(cox_model_lonely_raw)
+hr1 <- summary_lonely_raw$conf.int["lonelinessLonely", "exp(coef)"]
+lower1 <- summary_lonely_raw$conf.int["lonelinessLonely", "lower .95"]
+upper1 <- summary_lonely_raw$conf.int["lonelinessLonely", "upper .95"]
+p1 <- summary_lonely_raw$coefficients["lonelinessLonely", "Pr(>|z|)"]
+
+# 模型2结果
+summary_lonely_adj <- summary(cox_model_lonely_adj)
+hr2 <- summary_lonely_adj$conf.int["lonelinessLonely", "exp(coef)"]
+lower2 <- summary_lonely_adj$conf.int["lonelinessLonely", "lower .95"]
+upper2 <- summary_lonely_adj$conf.int["lonelinessLonely", "upper .95"]
+p2 <- summary_lonely_adj$coefficients["lonelinessLonely", "Pr(>|z|)"]
+
+# 模型3结果
+summary_lonely_pi <- summary(cox_model_lonely_pi)
+hr3 <- summary_lonely_pi$conf.int["lonelinessLonely", "exp(coef)"]
+lower3 <- summary_lonely_pi$conf.int["lonelinessLonely", "lower .95"]
+upper3 <- summary_lonely_pi$conf.int["lonelinessLonely", "upper .95"]
+p3 <- summary_lonely_pi$coefficients["lonelinessLonely", "Pr(>|z|)"]
+
+# 模型4结果 - loneliness 主效应
+summary_lonely_emm <- summary(cox_model_lonely_emm)
+hr4 <- summary_lonely_emm$conf.int["lonelinessLonely", "exp(coef)"]
+lower4 <- summary_lonely_emm$conf.int["lonelinessLonely", "lower .95"]
+upper4 <- summary_lonely_emm$conf.int["lonelinessLonely", "upper .95"]
+p4 <- summary_lonely_emm$coefficients["lonelinessLonely", "Pr(>|z|)"]
+
+# 提取交互项效果（假设交互项名称为 "lonelinessLonely:vigor_paLow activity"，
+# 表示当 vigor_pa 为 "Low activity" 时，loneliness 效应的额外修正）
+interaction_term <- "lonelinessLonely:vigor_paYes"
+interaction_coef <- summary_lonely_emm$coefficients[interaction_term, "coef"]
+interaction_hr   <- summary_lonely_emm$conf.int[interaction_term, "exp(coef)"]
+interaction_lower <- summary_lonely_emm$conf.int[interaction_term, "lower .95"]
+interaction_upper <- summary_lonely_emm$conf.int[interaction_term, "upper .95"]
+interaction_p     <- summary_lonely_emm$coefficients[interaction_term, "Pr(>|z|)"]
+
+
+```
+
+#### 【乘法交互】
+
+```{r}
+cat("交互项风险比 (exp(beta_interaction)) =", interaction_hr, "\n")
+cat("95% CI: (", interaction_lower, ",", interaction_upper, ")\n")
+cat("p 值:", interaction_p, "\n\n")
+```
+
+```{r}
+###################################
+## Additive interaction (RERI) 计算
+###################################
+# 提取相关系数（确保名称与模型输出一致）
+beta_iso <- summary_lonely_emm$coefficients["lonelinessLonely", "coef"]       # loneliness 主效应
+beta_pi  <- summary_lonely_emm$coefficients["vigor_paYes", "coef"]  # vigor_pa 主效应
+beta_int <- interaction_coef                                                  # 交互项
+
+# 计算各暴露组合下的风险比
+HR10 <- exp(beta_iso)                            # loneliness alone (X=1, Z=0)
+HR01 <- exp(beta_pi)                             # vigor_pa alone (X=0, Z=1)
+HR11 <- exp(beta_iso + beta_pi + beta_int)         # 双重暴露 (X=1, Z=1)
+
+RERI <- HR11 - HR10 - HR01 + 1
+
+cat("【加性交互 (RERI)】\n")
+## 【加性交互 (RERI)】
+cat("HR (loneliness only) =", HR10, "\n")
+## HR (loneliness only) = 1.845765
+cat("HR (physical inactivity only) =", HR01, "\n")
+## HR (physical inactivity only) = 1.652779
+cat("HR (both exposures) =", HR11, "\n")
+## HR (both exposures) = 2.359524
+cat("RERI =", RERI, "\n")
+## RERI = -0.1390197
+###################################
+## 计算 RERI 的95% CI及 p 值（delta 方法）
+###################################
+# 获取模型协方差矩阵
+V <- vcov(cox_model_lonely_emm)
+# 按顺序提取相关参数协方差子矩阵（假定参数顺序为 loneliness, vigor_pa, 交互项）
+param_names <- c("lonelinessLonely", "vigor_paYes", interaction_term)
+V_sub <- V[param_names, param_names]
+
+# 计算 RERI 关于各参数的偏导数
+d_beta <- c(
+  exp(beta_iso + beta_pi + beta_int) - exp(beta_iso),  # dRERI/d(beta_iso)
+  exp(beta_iso + beta_pi + beta_int) - exp(beta_pi),     # dRERI/d(beta_pi)
+  exp(beta_iso + beta_pi + beta_int)                     # dRERI/d(beta_int)
+)
+
+Var_RERI <- as.numeric(t(d_beta) %*% V_sub %*% d_beta)
+SE_RERI <- sqrt(Var_RERI)
+
+RERI_lower <- RERI - 1.96 * SE_RERI
+RERI_upper <- RERI + 1.96 * SE_RERI
+
+z_RERI <- RERI / SE_RERI
+p_RERI <- 2 * (1 - pnorm(abs(z_RERI)))
+
+cat("\nRERI 的结果：\n")
+## 
+## RERI 的结果：
+cat("RERI =", RERI, "\n")
+## RERI = -0.1390197
+cat("95% CI: (", RERI_lower, ",", RERI_upper, ")\n")
+## 95% CI: ( -0.5684211 , 0.2903818 )
+cat("z =", z_RERI, "\n")
+## z = -0.6345544
+cat("p 值 =", p_RERI, "\n")
+## p 值 = 0.5257191
+```
+
+```{r}
+# 准备表格文本
+tabletext <- cbind(
+  c("Model", "Loneliness only", "Adjusted", "Adj + Physical inactivity", "Interaction model"),
+  c("HR (95% CI)",
+    paste0(sprintf("%.2f", hr1), " (", sprintf("%.2f", lower1), "-", sprintf("%.2f", upper1), ")"),
+    paste0(sprintf("%.2f", hr2), " (", sprintf("%.2f", lower2), "-", sprintf("%.2f", upper2), ")"),
+    paste0(sprintf("%.2f", hr3), " (", sprintf("%.2f", lower3), "-", sprintf("%.2f", upper3), ")"),
+    paste0(sprintf("%.2f", hr4), " (", sprintf("%.2f", lower4), "-", sprintf("%.2f", upper4), ")")
+  ),
+  c("p-value",
+    ifelse(p1 < 0.001, "<0.001", sprintf("%.3f", p1)),
+    ifelse(p2 < 0.001, "<0.001", sprintf("%.3f", p2)),
+    ifelse(p3 < 0.001, "<0.001", sprintf("%.3f", p3)),
+    ifelse(p4 < 0.001, "<0.001", sprintf("%.3f", p4))
+  )
+)
+
+forest_data <- data.frame(
+  mean = c(NA, hr1, hr2, hr3, hr4),
+  lower = c(NA, lower1, lower2, lower3, lower4),
+  upper = c(NA, upper1, upper2, upper3, upper4)
+)
+
+mhas_loneliness_forestplot = forestplot(
+  labeltext = tabletext,
+  mean = forest_data$mean,
+  lower = forest_data$lower,
+  upper = forest_data$upper,
+  is.summary = c(TRUE, FALSE, FALSE, FALSE, FALSE),
+  zero = 1,
+  boxsize = 0.2,
+  lineheight = "auto",
+  col = fpColors(box = "royalblue", line = "darkblue", summary = "royalblue"),
+  xlab = "Hazard Ratio (95% CI)",
+  hrzl_lines = list("2" = gpar(lty = 2)),
+  txt_gp = fpTxtGp(label = gpar(cex = 1.2),
+                   ticks = gpar(cex = 0.9),
+                   xlab = gpar(cex = 1.2),
+                   title = gpar(cex = 1.3)),
+  title = "Association between Loneliness and Depression Risk"
+)
+mhas_loneliness_forestplot
+
+```
+
+```{r}
+lrt_result <- anova(cox_model_lonely_pi, cox_model_lonely_emm, test = "LRT")
+print(lrt_result)
+```
+## SSI
+
+### Cox model
+
+```{r}
+# 模型1：仅包含 isolation 单变量 Cox 模型
+cox_model_iso_raw <- coxph(Surv(time, event) ~ isolation, data = dataset_std)
+
+
+# 模型2：调整协变量的 Cox 模型（不含身体活动）
+cox_model_iso_adj <- coxph(Surv(time, event) ~ isolation + age + sex  + mar_status + education + employment +
+                             bmi + smoking + alcohol + ncd,
+                           data = dataset_std)
+
+# 模型3：在模型中加入 vigor_pa 作为协变量（调整模型中额外控制身体活动）
+cox_model_iso_pi <- coxph(Surv(time, event) ~ isolation + vigor_pa + age + sex  + mar_status + education + employment +
+                            bmi + smoking + alcohol + ncd,
+                          data = dataset_std)
+
+# 模型4：包含 isolation 与 vigor_pa 交互项的 Cox 模型
+cox_model_iso_emm <- coxph(Surv(time, event) ~ isolation * vigor_pa + age + sex  + mar_status + education + employment +
+                             bmi + smoking + alcohol + ncd,
+                           data = dataset_std)
+```
+
+
+#### Model result (Forest values)
+```{r}
+# 提取模型1结果
+summary_iso_raw <- summary(cox_model_iso_raw)
+hr_iso1 <- summary_iso_raw$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso1 <- summary_iso_raw$conf.int["isolationYes", "lower .95"]
+upper_ci_iso1 <- summary_iso_raw$conf.int["isolationYes", "upper .95"]
+p_val_iso1 <- summary_iso_raw$coefficients["isolationYes", "Pr(>|z|)"]
+
+# 模型2结果
+summary_iso_adj <- summary(cox_model_iso_adj)
+hr_iso2 <- summary_iso_adj$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso2 <- summary_iso_adj$conf.int["isolationYes", "lower .95"]
+upper_ci_iso2 <- summary_iso_adj$conf.int["isolationYes", "upper .95"]
+p_val_iso2 <- summary_iso_adj$coefficients["isolationYes", "Pr(>|z|)"]
+
+# 模型3结果
+summary_iso_pi <- summary(cox_model_iso_pi)
+hr_iso3 <- summary_iso_pi$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso3 <- summary_iso_pi$conf.int["isolationYes", "lower .95"]
+upper_ci_iso3 <- summary_iso_pi$conf.int["isolationYes", "upper .95"]
+p_val_iso3 <- summary_iso_pi$coefficients["isolationYes", "Pr(>|z|)"]
+
+# 模型4结果 - isolation 主效应
+summary_iso_emm <- summary(cox_model_iso_emm)
+hr_iso4 <- summary_iso_emm$conf.int["isolationYes", "exp(coef)"]
+lower_ci_iso4 <- summary_iso_emm$conf.int["isolationYes", "lower .95"]
+upper_ci_iso4 <- summary_iso_emm$conf.int["isolationYes", "upper .95"]
+p_val_iso4 <- summary_iso_emm$coefficients["isolationYes", "Pr(>|z|)"]
+
+# 交互项效果提取（假设交互项名称为 "isolationYes:vigor_paLow activity"，
+# 表示当 vigor_pa 为 "Low activity" 时，isolation 的额外修正）
+interaction_term_iso <- "isolationYes:vigor_paYes"
+interaction_coef_iso <- summary_iso_emm$coefficients[interaction_term_iso, "coef"]
+interaction_hr_iso   <- summary_iso_emm$conf.int[interaction_term_iso, "exp(coef)"]
+interaction_lower_iso <- summary_iso_emm$conf.int[interaction_term_iso, "lower .95"]
+interaction_upper_iso <- summary_iso_emm$conf.int[interaction_term_iso, "upper .95"]
+interaction_p_iso     <- summary_iso_emm$coefficients[interaction_term_iso, "Pr(>|z|)"]
+
+
+
+
+```
+
+#### 【乘法交互】
+
+```{r}
+######################################
+## Multiplicative interaction
+######################################
+cat("【乘法交互】\n")
+## 【乘法交互】
+cat("交互项风险比 (exp(beta_interaction)) =", interaction_hr_iso, "\n")
+## 交互项风险比 (exp(beta_interaction)) = 1.100757
+cat("95% CI: (", interaction_lower_iso, ",", interaction_upper_iso, ")\n")
+## 95% CI: ( 0.8765557 , 1.382305 )
+cat("p 值:", interaction_p_iso, "\n\n")
+## p 值: 0.4087312
+```
+
+#### Additive interaction (RERI)
+
+```{r}
+###################################
+## Additive interaction (RERI) 计算
+###################################
+# 提取相关系数（确保名称与模型输出一致）
+beta_iso <- summary_iso_emm$coefficients["isolationYes", "coef"]      # isolation 主效应
+beta_pi  <- summary_iso_emm$coefficients["vigor_paYes", "coef"]             # vigor_pa 主效应
+beta_int <- interaction_coef_iso                                                    # 交互项
+
+# 计算各种暴露组合下的风险比
+HR10 <- exp(beta_iso)                       # isolation alone (when vigor_pa = 0)
+HR01 <- exp(beta_pi)                        # vigor_pa alone (when isolation = 0)
+HR11 <- exp(beta_iso + beta_pi + beta_int)    # both exposures (isolation and vigor_pa)
+
+# RERI 计算公式
+RERI <- HR11 - HR10 - HR01 + 1
+
+cat("【加性交互 (RERI)】\n")
+## 【加性交互 (RERI)】
+cat("HR (isolation only) =", HR10, "\n")
+## HR (isolation only) = 1.068376
+cat("HR (physical inactivity only) =", HR01, "\n")
+## HR (physical inactivity only) = 1.415559
+cat("HR (both exposures) =", HR11, "\n")
+## HR (both exposures) = 1.66473
+cat("RERI =", RERI, "\n")
+## RERI = 0.1807948
+######################################
+## 计算 RERI 的95% CI和 p 值（delta方法）
+######################################
+# 获取交互模型中相关系数的协方差矩阵
+V <- vcov(cox_model_iso_emm)
+# 提取相关参数的协方差子矩阵，按顺序为 isolation, vigor_pa, 交互项
+param_names <- c("isolationYes", "vigor_paYes", interaction_term_iso)
+V_sub <- V[param_names, param_names]
+
+# 计算 RERI 关于各个参数的偏导数
+# dRERI/dβ_iso = exp(β_iso + β_pi + β_int) - exp(β_iso)
+# dRERI/dβ_pi  = exp(β_iso + β_pi + β_int) - exp(β_pi)
+# dRERI/dβ_int = exp(β_iso + β_pi + β_int)
+d_beta <- c(
+  exp(beta_iso + beta_pi + beta_int) - exp(beta_iso),
+  exp(beta_iso + beta_pi + beta_int) - exp(beta_pi),
+  exp(beta_iso + beta_pi + beta_int)
+)
+
+# 计算 RERI 的方差：Var(RERI) = d_beta' * V_sub * d_beta
+Var_RERI <- as.numeric(t(d_beta) %*% V_sub %*% d_beta)
+SE_RERI <- sqrt(Var_RERI)
+
+# 计算95% CI
+RERI_lower <- RERI - 1.96 * SE_RERI
+RERI_upper <- RERI + 1.96 * SE_RERI
+
+# 计算针对 RERI 的 z 统计量和 p 值
+z_RERI <- RERI / SE_RERI
+p_RERI <- 2 * (1 - pnorm(abs(z_RERI)))
+
+cat("\nRERI 的结果：\n")
+cat("RERI =", RERI, "\n")
+
+cat("95% CI: (", RERI_lower, ",", RERI_upper, ")\n")
+
+cat("z =", z_RERI, "\n")
+
+cat("p 值 =", p_RERI, "\n")
+
+```
+
+```{r}
+# 准备表格文本
+tabletext_iso <- cbind(
+  c("Model", "Isolation only", "Adjusted", "Adj + PI", "Interaction model"),
+  c("HR (95% CI)",
+    paste0(sprintf("%.2f", hr_iso1), " (", sprintf("%.2f", lower_ci_iso1), "-", sprintf("%.2f", upper_ci_iso1), ")"),
+    paste0(sprintf("%.2f", hr_iso2), " (", sprintf("%.2f", lower_ci_iso2), "-", sprintf("%.2f", upper_ci_iso2), ")"),
+    paste0(sprintf("%.2f", hr_iso3), " (", sprintf("%.2f", lower_ci_iso3), "-", sprintf("%.2f", upper_ci_iso3), ")"),
+    paste0(sprintf("%.2f", hr_iso4), " (", sprintf("%.2f", lower_ci_iso4), "-", sprintf("%.2f", upper_ci_iso4), ")")
+  ),
+  c("p-value",
+    ifelse(p_val_iso1 < 0.001, "<0.001", sprintf("%.3f", p_val_iso1)),
+    ifelse(p_val_iso2 < 0.001, "<0.001", sprintf("%.3f", p_val_iso2)),
+    ifelse(p_val_iso3 < 0.001, "<0.001", sprintf("%.3f", p_val_iso3)),
+    ifelse(p_val_iso4 < 0.001, "<0.001", sprintf("%.3f", p_val_iso4))
+  )
+)
+
+forest_data_iso <- data.frame(
+  mean = c(NA, hr_iso1, hr_iso2, hr_iso3, hr_iso4),
+  lower = c(NA, lower_ci_iso1, lower_ci_iso2, lower_ci_iso3, lower_ci_iso4),
+  upper = c(NA, upper_ci_iso1, upper_ci_iso2, upper_ci_iso3, upper_ci_iso4)
+)
+
+mhas_ssi_forestplot= forestplot(
+  labeltext = tabletext_iso,
+  mean = forest_data_iso$mean,
+  lower = forest_data_iso$lower,
+  upper = forest_data_iso$upper,
+  is.summary = c(TRUE, FALSE, FALSE, FALSE, FALSE),
+  zero = 1,
+  boxsize = 0.2,
+  lineheight = "auto",
+  col = fpColors(box = "royalblue", line = "darkblue", summary = "royalblue"),
+  xlab = "Hazard Ratio (95% CI)",
+  hrzl_lines = list("2" = gpar(lty = 2)),
+  txt_gp = fpTxtGp(label = gpar(cex = 1.2),
+                   ticks = gpar(cex = 0.9),
+                   xlab = gpar(cex = 1.2),
+                   title = gpar(cex = 1.3)),
+  title = "Association between Social Isolation and Depression Risk"
+)
+mhas_ssi_forestplot
+```
+
+
+
+
+# Pool
+```{r}
+head(mhas_data_std,2)
+head(elsa_data_std,2)
+head(hrs_data_std,2)
+```
+, ,
+```{r}
+str(mhas_data_std$sex)
+str(elsa_data_std$sex)
+str(hrs_data_std$sex)
+```
+
+```{r}
+# 1. 定义你想要保留并统一顺序的列向量
+mhas_data_std=mhas_data_std|>
+  mutate(
+    sex = factor(sex,
+      levels = c(1, 2),
+      labels = c("Male", "Female")
+    )
+  )
+elsa_data_std=elsa_data_std|>
+  mutate(
+    sex = factor(sex,
+      levels = c(1, 2),
+      labels = c("Male", "Female")
+    )
+  )
+
+desired_cols <- c(
+  "id",
+  "loneliness",
+  "isolation",
+  "vigor_pa",
+  "age",
+  "sex",
+  "education",
+  "mar_status",
+  "employment",
+  "bmi",
+  "smoking",
+  "alcohol",
+  "ncd",
+  "race",
+  "time",
+  "event",
+  "data_source"
+)
+
+# 2. 对每个数据集进行选列并按照 desired_cols 排序
+mhas_std2 <- mhas_data_std[ , desired_cols]
+elsa_std2 <- elsa_data_std[ , desired_cols]
+hrs_std2  <- hrs_data_std[ , desired_cols]
+
+# （如果列中有不存在的名字，R 会报错——你可以先检查一下）
+stopifnot(all(desired_cols %in% colnames(mhas_data_std)))
+stopifnot(all(desired_cols %in% colnames(elsa_data_std)))
+stopifnot(all(desired_cols %in% colnames(hrs_data_std)))
+
+# 3. 按行合并
+combined_df <- rbind(mhas_std2, elsa_std2, hrs_std2)
+
+# 4. 检查
+str(combined_df)
+table(combined_df$data_source)
+```
+## EDA
+```{r}
+dataset_std = combined_df
+# 定义要包含在表中的变量
+vars <- c("age", "sex", "race", "mar_status", "education", "employment", 
+          "bmi", "smoking", "alcohol" ,"ncd","isolation", "loneliness","data_source")
+
+# 定义哪些变量为分类变量
+categorical_vars <- c("isolation", "loneliness", "sex", "race", "mar_status", "education", "employment", 
+                      "smoking", "alcohol", "ncd", "bmi","data_source")
+
+# 创建 Table 1，假设 vigor_pa（这里统一为 inactivity）是分层变量
+table1_generic <- CreateTableOne(
+  vars = vars,
+  strata = "vigor_pa",
+  data = dataset_std,
+  factorVars = categorical_vars,
+  addOverall = T
+)
+print(table1_generic)
+```
+```{r}
+#Power calculation
+# —— 1. 准备：从 combined_df 提取事件数和暴露比例 —— 
+# 这里以 loneliness 为例；如果算 isolation，把下面两行中的变量名改成 isolation=="Yes"
+E           <- sum(combined_df$event)  
+p_exposed   <- mean(combined_df$loneliness == "Lonely")
+
+# —— 2. 选择你要评估的 HR —— 
+# 例如，用模型4 中 loneliness 的主效应 HR（你之前提取的 hr4_pooled）
+hr_obs      <- hr4_pooled
+
+# —— 3. Schoenfeld 近似计算 power —— 
+alpha       <- 0.05
+z_alpha2    <- qnorm(1 - alpha / 2)
+
+z_beta      <- sqrt(E * p_exposed * (1 - p_exposed)) * abs(log(hr_obs)) - z_alpha2
+power_est   <- pnorm(z_beta)
+
+# —— 4. 输出结果 —— 
+cat("事件总数 E =", E, "\n")
+cat("暴露比例 p =", round(p_exposed, 3), "\n")
+cat("观察到的 HR =", round(hr_obs, 3), "\n\n")
+cat("估算的检验效能 (power) =", round(power_est, 3), "\n")
+
+
+```
+```{r}
+
+E           <- sum(combined_df$event)  
+p_exposed   <- mean(combined_df$isolation == "Yes")
+hr_obs      <- 1.065    # 你提取的 isolation 模型4 的主效应 HR
+
+# 其余代码同上
+alpha       <- 0.05
+z_alpha2    <- qnorm(1 - alpha / 2)
+z_beta      <- sqrt(E * p_exposed * (1 - p_exposed)) * abs(log(hr_obs)) - z_alpha2
+power_est   <- pnorm(z_beta)
+
+cat("事件总数 E =", E, "\n")
+cat("暴露比例 p =", round(p_exposed, 3), "\n")
+cat("观察到的 HR =", round(hr_obs, 3), "\n\n")
+cat("估算的检验效能 (power) =", round(power_est, 3), "\n")
+```
+
+
+
+```{r}
+
+# 模型1：仅包含 loneliness 单变量 Cox 模型
+cox_pooled_lonely_raw <- coxme(Surv(time, event) ~ loneliness + (1 | data_source), data = combined_df)
+# 模型2：调整人口统计和健康相关协变量的 Cox 模型
+cox_pooled_lonely_adj  <- coxme(Surv(time, event) ~ loneliness + 
+                           age + sex  + mar_status + education + employment +
+                           bmi + smoking + alcohol + ncd + (1 | data_source),
+                           data = combined_df)
+# 模型3：调整vigor_pa、人口统计和健康相关协变量的 Cox 模型
+cox_pooled_lonely_pi <- coxme(Surv(time, event) ~ loneliness + vigor_pa + 
+                           age + sex + mar_status + education + employment +
+                           bmi + smoking + alcohol + ncd + (1 | data_source),
+                           data = combined_df)
+# 模型4：包含 loneliness 与 vigor_pa 交互项的 Cox 模型
+cox_pooled_lonely_emm <- coxme(Surv(time, event) ~ loneliness * vigor_pa + 
+                           age + sex  + mar_status + education + employment +
+                           bmi + smoking + alcohol + ncd + (1 | data_source),
+                           data = combined_df)
+```
+
+```{r}
+# 模型1结果
+summary_lonely_raw_pooled <- summary(cox_pooled_lonely_raw)
+hr1_pooled <- summary_lonely_adj$coefficients["lonelinessLonely", "exp(coef)"]
+p1_pooled <- summary_lonely_raw$coefficients["lonelinessLonely", "p"]
+
+# 模型2结果
+summary_lonely_adj_pooled <- summary(cox_pooled_lonely_adj)
+hr2_pooled <- summary_lonely_adj$coefficients["lonelinessLonely", "exp(coef)"]
+p2_pooled <- summary_lonely_adj$coefficients["lonelinessLonely", "p"]
+
+# 模型3结果
+summary_lonely_pi_pooled <- summary(cox_pooled_lonely_pi)
+hr3_pooled <- summary_lonely_pi$coefficients["lonelinessLonely", "exp(coef)"]
+p3_pooled <- summary_lonely_pi$coefficients["lonelinessLonely", "p"]
+
+# 模型4结果 - loneliness 主效应
+summary_lonely_emm_pooled <- summary(cox_pooled_lonely_emm)
+hr4_pooled <- summary_lonely_emm$coefficients["lonelinessLonely", "exp(coef)"]
+p4_pooled <- summary_lonely_emm$coefficients["lonelinessLonely", "p"]
+
+# 提取交互项效果（假设交互项名称为 "lonelinessLonely:vigor_paLow activity"，
+# 表示当 vigor_pa 为 "Low activity" 时，loneliness 效应的额外修正）
+interaction_term_pooled <- "lonelinessLonely:vigor_paYes"
+interaction_coef_pooled <- summary_lonely_emm_pooled$coefficients[interaction_term, "coef"]
+interaction_hr_pooled   <- summary_lonely_emm_pooled$coefficients[interaction_term, "exp(coef)"]
+interaction_p_pooled     <- summary_lonely_emm_pooled$coefficients[interaction_term, "p"]
+
+```
+
+```{r}
+###################################
+## Multiplicative interaction
+###################################
+cat("【乘法交互】\n")
+## 【乘法交互】
+cat("交互项风险比 (exp(beta_interaction)) =", interaction_hr_pooled, "\n")
+## 交互项风险比 (exp(beta_interaction)) = 0.7734518
+
+## 95% CI: ( 0.6187645 , 0.96681 )
+cat("p 值:", interaction_p_pooled, "\n\n")
+```
+
+```{r}
+###################################
+## Additive interaction (RERI) 计算
+###################################
+# 提取相关系数（确保名称与模型输出一致）
+beta_iso_pooled <- summary_lonely_emm_pooled$coefficients["lonelinessLonely", "coef"]       # loneliness 主效应
+beta_pi_pooled  <- summary_lonely_emm_pooled$coefficients["vigor_paYes", "coef"]  # vigor_pa 主效应
+beta_int_pooled <- interaction_coef_pooled                                                  # 交互项
+
+# 计算各暴露组合下的风险比
+HR10_pooled <- exp(beta_iso_pooled)                            # loneliness alone (X=1, Z=0)
+HR01_pooled <- exp(beta_pi_pooled)                             # vigor_pa alone (X=0, Z=1)
+HR11_pooled <- exp(beta_iso_pooled + beta_pi_pooled + beta_int_pooled)         # 双重暴露 (X=1, Z=1)
+
+RERI_pooled <- HR11_pooled - HR10_pooled - HR01_pooled + 1
+
+cat("【加性交互 (RERI)】\n")
+## 【加性交互 (RERI)】
+cat("HR (loneliness only) =", HR10_pooled, "\n")
+## HR (loneliness only) = 1.845765
+cat("HR (physical inactivity only) =", HR01_pooled, "\n")
+## HR (physical inactivity only) = 1.652779
+cat("HR (both exposures) =", HR11_pooled, "\n")
+## HR (both exposures) = 2.359524
+cat("RERI =", RERI_pooled, "\n")
+## RERI = -0.1390197
+###################################
+## 计算 RERI 的95% CI及 p 值（delta 方法）
+###################################
+# 获取模型协方差矩阵
+V_pooled <- vcov(cox_pooled_lonely_emm)
+# 按顺序提取相关参数协方差子矩阵（假定参数顺序为 loneliness, vigor_pa, 交互项）
+param_names_pooled <- c("lonelinessLonely", "vigor_paYes", interaction_term_pooled)
+V_sub_pooled <- V[param_names_pooled, param_names_pooled]
+
+# 计算 RERI 关于各参数的偏导数
+d_beta_pooled <- c(
+  exp(beta_iso_pooled + beta_pi_pooled + beta_int_pooled) - exp(beta_iso_pooled),  # dRERI/d(beta_iso)
+  exp(beta_iso_pooled + beta_pi_pooled + beta_int_pooled) - exp(beta_pi_pooled),     # dRERI/d(beta_pi)
+  exp(beta_iso_pooled + beta_pi_pooled + beta_int_pooled)                     # dRERI/d(beta_int)
+)
+
+Var_RERI_pooled <- as.numeric(t(d_beta_pooled) %*% V_sub_pooled %*% d_beta_pooled)
+SE_RERI_pooled <- sqrt(Var_RERI_pooled)
+
+RERI_lower_pooled <- RERI_pooled - 1.96 * SE_RERI_pooled
+RERI_upper_pooled <- RERI_pooled + 1.96 * SE_RERI_pooled
+
+z_RERI_pooled <- RERI_pooled / SE_RERI_pooled
+p_RERI_pooled <- 2 * (1 - pnorm(abs(z_RERI_pooled)))
+
+cat("\nRERI 的结果：\n")
+## 
+## RERI 的结果：
+cat("RERI =", RERI_pooled, "\n")
+## RERI = -0.1390197
+cat("95% CI: (", RERI_lower_pooled, ",", RERI_upper_pooled, ")\n")
+## 95% CI: ( -0.5684211 , 0.2903818 )
+cat("z =", z_RERI_pooled, "\n")
+## z = -0.6345544
+cat("p 值 =", p_RERI_pooled, "\n")
+```
+
+```{r}
+# 1. 拟合四个 pooled mixed‐effects Cox 模型
+library(coxme)
+
+# 模型1：仅包含 isolation 主效应
+cox_pooled_iso_raw <- coxme(
+  Surv(time, event) ~ isolation + (1 | data_source),
+  data = combined_df
+)
+
+# 模型2：调整人口统计和健康协变量
+cox_pooled_iso_adj <- coxme(
+  Surv(time, event) ~ isolation +
+    age + sex + mar_status + education + employment +
+    bmi + smoking + alcohol + ncd +
+    (1 | data_source),
+  data = combined_df
+)
+
+# 模型3：再加上 vigor_pa 主效应
+cox_pooled_iso_pi <- coxme(
+  Surv(time, event) ~ isolation + vigor_pa +
+    age + sex + mar_status + education + employment +
+    bmi + smoking + alcohol + ncd +
+    (1 | data_source),
+  data = combined_df
+)
+
+# 模型4：加上 isolation × vigor_pa 交互
+cox_pooled_iso_emm <- coxme(
+  Surv(time, event) ~ isolation * vigor_pa +
+    age + sex + mar_status + education + employment +
+    bmi + smoking + alcohol + ncd +
+    (1 | data_source),
+  data = combined_df
+)
+
+
+```
+
+
+```{r}
+
+# 2. 提取各模型的 HR 和 p‐value
+# --------------------------------------------------
+# 模型1 结果
+sum_iso_raw_p <- summary(cox_pooled_iso_raw)
+hr1_pooled <-  sum_iso_raw_p$coefficients["isolationYes","exp(coef)"]
+p1_pooled  <-  sum_iso_raw_p$coefficients["isolationYes","p"]
+
+# 模型2 结果
+sum_iso_adj_p <- summary(cox_pooled_iso_adj)
+hr2_pooled    <- sum_iso_adj_p$coefficients["isolationYes","exp(coef)"]
+p2_pooled     <- sum_iso_adj_p$coefficients["isolationYes","p"]
+
+# 模型3 结果
+sum_iso_pi_p  <- summary(cox_pooled_iso_pi)
+hr3_pooled    <- sum_iso_pi_p$coefficients["isolationYes","exp(coef)"]
+p3_pooled     <- sum_iso_pi_p$coefficients["isolationYes","p"]
+
+# 模型4 结果（主效应部分）
+sum_iso_emm_p <- summary(cox_pooled_iso_emm)
+hr4_pooled    <- sum_iso_emm_p$coefficients["isolationYes","exp(coef)"]
+p4_pooled     <- sum_iso_emm_p$coefficients["isolationYes","p"]
+
+# 提取交互项（假设 factor level 名称是 isolationYes:vigor_paYes）
+interaction_term_iso <- "isolationYes:vigor_paYes"
+interaction_coef_p  <- sum_iso_emm_p$coefficients[interaction_term_iso, "coef"]
+interaction_hr_p    <- sum_iso_emm_p$coefficients[interaction_term_iso, "exp(coef)"]
+interaction_p_p     <- sum_iso_emm_p$coefficients[interaction_term_iso, "p"]
+
+
+
+```
+
+```{r}
+# 3. Multiplicative interaction 输出
+cat("【乘法交互】\n")
+cat("交互项 HR (exp(beta)) =", sprintf("%.3f", interaction_hr_p), "\n")
+cat("p 值 =", sprintf("%.3f", interaction_p_p), "\n\n")
+
+
+# 4. Additive interaction (RERI) 计算
+# --------------------------------------------------
+# 提取三个系数
+beta_iso_p   <- sum_iso_emm_p$coefficients["isolationYes", "coef"]
+beta_pi_p    <- sum_iso_emm_p$coefficients["vigor_paYes", "coef"]
+beta_int_p   <- interaction_coef_p
+
+# 计算单、双暴露下的 HR
+HR10 <- exp(beta_iso_p)                              # isolation only
+HR01 <- exp(beta_pi_p)                               # phys_inactivity only
+HR11 <- exp(beta_iso_p + beta_pi_p + beta_int_p)     # both
+
+# 计算 RERI
+RERI <- HR11 - HR10 - HR01 + 1
+
+# delta 方法估算标准误和置信区间
+V   <- vcov(cox_pooled_iso_emm)
+params <- c("isolationYes", "vigor_paYes", interaction_term_iso)
+V_sub  <- V[params, params]
+
+# RERI 对各 beta 的偏导数
+dR_dbetas <- c(
+  exp(beta_iso_p + beta_pi_p + beta_int_p) - exp(beta_iso_p),
+  exp(beta_iso_p + beta_pi_p + beta_int_p) - exp(beta_pi_p),
+  exp(beta_iso_p + beta_pi_p + beta_int_p)
+)
+
+Var_RERI <- as.numeric(t(dR_dbetas) %*% V_sub %*% dR_dbetas)
+SE_RERI  <- sqrt(Var_RERI)
+
+CI_lower <- RERI - 1.96 * SE_RERI
+CI_upper <- RERI + 1.96 * SE_RERI
+
+z_val    <- RERI / SE_RERI
+p_RERI   <- 2 * (1 - pnorm(abs(z_val)))
+
+# 打印结果
+cat("【加性交互 (RERI)】\n")
+cat("HR (isolation only) =", sprintf("%.3f", HR10), "\n")
+cat("HR (physical inactivity only) =", sprintf("%.3f", HR01), "\n")
+cat("HR (both) =", sprintf("%.3f", HR11), "\n")
+cat("RERI =", sprintf("%.3f", RERI), "\n")
+cat("95% CI: (", sprintf("%.3f", CI_lower), ",", sprintf("%.3f", CI_upper), ")\n")
+cat("z =", sprintf("%.3f", z_val), "  p =", sprintf("%.3f", p_RERI), "\n")
+
+```
+```{r}
+
+library(car)
+linear_model <- lm(as.numeric(event) ~ combined_df$isolation + vigor_pa + 
+                           age + sex + mar_status + education + employment +
+                           bmi + smoking + alcohol + ncd ,
+                           data = combined_df)
+
+vif(linear_model)
+```
+
+
+
+
+
+# Meta analysis
+
+## Loneliness
+
+### main effect
+```{r}
+library(metafor)
+meta_data <- data.frame(
+  study = c("HRS", "ELSA", "MHAS"),
+  HR = c(1.78,1.76 ,1.34 ),         
+  Upper = c(1.92, 1.93, 1.59)  ,
+  Lower = c(1.65,1.60 , 1.13)
+  
+)
+
+meta_data$logHR <- log(meta_data$HR)
+meta_data$SE <- (log(meta_data$Upper) - log(meta_data$Lower)) / (2 * 1.96)
+```
+
+```{r}
+# Random-effects model using REML
+res <- rma(yi = logHR, sei = SE, data = meta_data, method = "REML")
+
+# 显示结果
+summary(res)
+
 ```
 
 ```{r}
 
+cat("I² =", res$I2, "%\n")
+cat("τ² =", res$tau2, "\n")
+cat("Q-test p-value =", res$QEp, "\n")
+```
+
+### RERI
+```{r}
+meta_data <- data.frame(
+  study = c("HRS", "ELSA", "MHAS"),
+  HR = c(1.01,0.77 ,1.08 ),         
+  Upper = c(1.21, 0.97, 1.53)  ,
+  Lower = c(0.85,0.62 , 0.76)
+  
+)
+
+meta_data$logHR <- log(meta_data$HR)
+meta_data$SE <- (log(meta_data$Upper) - log(meta_data$Lower)) / (2 * 1.96)
+```
+
+```{r}
+# Random-effects model using REML
+res <- rma(yi = logHR, sei = SE, data = meta_data, method = "REML")
+
+# 显示结果
+summary(res)
 
 ```
 
+```{r}
+
+cat("I² =", res$I2, "%\n")
+cat("τ² =", res$tau2, "\n")
+cat("Q-test p-value =", res$QEp, "\n")
+```
+
+### Multiplicative interaction
+```{r}
+meta_data <- data.frame(
+  study = c("HRS", "ELSA", "MHAS"),
+  HR = c(1.01,0.77 ,1.08 ),         
+  Upper = c(1.21, 0.97, 1.53)  ,
+  Lower = c(0.85,0.62 , 0.76)
+  
+)
+
+meta_data$logHR <- log(meta_data$HR)
+meta_data$SE <- (log(meta_data$Upper) - log(meta_data$Lower)) / (2 * 1.96)
+```
+
+```{r}
+# Random-effects model using REML
+res <- rma(yi = logHR, sei = SE, data = meta_data, method = "REML")
+
+# 显示结果
+summary(res)
+
+```
+
+```{r}
+
+cat("I² =", res$I2, "%\n")
+cat("τ² =", res$tau2, "\n")
+cat("Q-test p-value =", res$QEp, "\n")
+```
 
 
+## Loneliness
+
+### main effect
+```{r}
+meta_data <- data.frame(
+  study = c("HRS", "ELSA", "MHAS"),
+  HR = c(1.01,0.77 ,1.08 ),         
+  Upper = c(1.21, 0.97, 1.53)  ,
+  Lower = c(0.85,0.62 , 0.76)
+  
+)
+
+meta_data$logHR <- log(meta_data$HR)
+meta_data$SE <- (log(meta_data$Upper) - log(meta_data$Lower)) / (2 * 1.96)
+```
+
+```{r}
+# Random-effects model using REML
+res <- rma(yi = logHR, sei = SE, data = meta_data, method = "REML")
+
+# 显示结果
+summary(res)
+
+```
+
+```{r}
+
+cat("I² =", res$I2, "%\n")
+cat("τ² =", res$tau2, "\n")
+cat("Q-test p-value =", res$QEp, "\n")
+```
+
+### RERI
+```{r}
+meta_data <- data.frame(
+  study = c("HRS", "ELSA", "MHAS"),
+  HR = c(1.01,0.77 ,1.08 ),         
+  Upper = c(1.21, 0.97, 1.53)  ,
+  Lower = c(0.85,0.62 , 0.76)
+  
+)
+
+meta_data$logHR <- log(meta_data$HR)
+meta_data$SE <- (log(meta_data$Upper) - log(meta_data$Lower)) / (2 * 1.96)
+```
+
+```{r}
+# Random-effects model using REML
+res <- rma(yi = logHR, sei = SE, data = meta_data, method = "REML")
+
+# 显示结果
+summary(res)
+
+```
+
+```{r}
+
+cat("I² =", res$I2, "%\n")
+cat("τ² =", res$tau2, "\n")
+cat("Q-test p-value =", res$QEp, "\n")
+```
+
+### SSI
+```{r}
+meta_data <- data.frame(
+  study = c("HRS", "ELSA", "MHAS"),
+  HR = c(0.89,1.10 ,0.84 ),         
+  Upper = c(1.07, 1.38, 1.17)  ,
+  Lower = c(0.75,0.88 , 0.61)
+  
+)
+
+meta_data$logHR <- log(meta_data$HR)
+meta_data$SE <- (log(meta_data$Upper) - log(meta_data$Lower)) / (2 * 1.96)
+```
+
+```{r}
+# Random-effects model using REML
+res <- rma(yi = logHR, sei = SE, data = meta_data, method = "REML")
+
+# 显示结果
+summary(res)
+
+```
+
+```{r}
+
+cat("I² =", res$I2, "%\n")
+cat("τ² =", res$tau2, "\n")
+cat("Q-test p-value =", res$QEp, "\n")
+```
+
+
+## main effect
+```{r}
+meta_data <- data.frame(
+  study = c("HRS", "ELSA", "MHAS"),
+  HR = c(1.04,1.03, 1.09 ),         
+  Upper = c(1.13, 1.12, 1.29)  ,
+  Lower = c(0.95,0.95 , 0.92)
+  
+)
+
+meta_data$logHR <- log(meta_data$HR)
+meta_data$SE <- (log(meta_data$Upper) - log(meta_data$Lower)) / (2 * 1.96)
+```
+
+```{r}
+# Random-effects model using REML
+res <- rma(yi = logHR, sei = SE, data = meta_data, method = "REML")
+
+# 显示结果
+summary(res)
+
+```
+```{r}
+
+cat("I² =", res$I2, "%\n")
+cat("τ² =", res$tau2, "\n")
+cat("Q-test p-value =", res$QEp, "\n")
+```
+```
